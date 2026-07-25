@@ -298,9 +298,8 @@ trait ConfigureKeymap {
 
             if linewise {
                 let s = join_iter(a.buf.get_lines(start.line()..=end.line()));
-                debug!("{s:?}");
                 a.buf.remove_lines(start.line()..end.line() + 1);
-
+                a.state.registers.set_register('"', s, true);
                 return;
             }
 
@@ -310,6 +309,11 @@ trait ConfigureKeymap {
         });
         self.configure_motions(&[I::Char('y')], |a, start, end, linewise| {
             let (start, end) = sort_location(start, end);
+            if linewise {
+                let s = join_iter(a.buf.get_lines(start.line()..=end.line()));
+                a.state.registers.set_register('"', s, true);
+                return;
+            }
             let s = join_iter(a.buf.get_range(start, end));
             a.state.registers.set_register('"', s, false);
         });
@@ -1228,5 +1232,10 @@ mod tests {
         let (_f, mut buf) = buffer("use anyhow::anyhow;\nuse log::LevelFilter;\nblah");
         feedkeys(&mut vim, &mut buf, "llldj").no_break();
         assert_eq!(buf.save(), "blah\n");
+        assert_eq!(
+            vim.state.registers.get_register('"').value,
+            "use anyhow::anyhow;\nuse log::LevelFilter;"
+        );
+        assert!(vim.state.registers.get_register('"').yanked_linewise);
     }
 }

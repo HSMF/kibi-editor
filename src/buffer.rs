@@ -1,8 +1,46 @@
-use std::ops::{Range, RangeInclusive};
+use std::{
+    collections::VecDeque,
+    ops::{Range, RangeInclusive},
+};
 
 use tinyvec::{ArrayVec, array_vec};
 
 use crate::{CursorDirection, location::Location};
+
+#[derive(PartialEq, Eq, Debug)]
+enum Action {
+    RemoveLine {
+        line_num: usize,
+        line: String,
+    },
+    RemoveLines {
+        range: Range<usize>,
+        lines: Vec<String>,
+    },
+    InsertChar {
+        inserted: char,
+        at: Location,
+    },
+    AddNewline {
+        at: Location,
+    },
+    DeleteRange {
+        start: Location,
+        end: Location,
+        /// what was removed
+        range: String,
+    },
+    SetRange {
+        start: Location,
+        end: Location,
+        /// what was there previously
+        replaced: Vec<String>,
+    },
+    InsertLines {
+        start: usize,
+        count: usize,
+    },
+}
 
 #[derive(Debug, PartialEq, Eq, Default)]
 pub struct Row {
@@ -84,23 +122,6 @@ impl Row {
         (self.render, self.render_chars) = Self::rendered(&self.content);
     }
 
-    fn delete_char(&mut self, cur_col: usize) {
-        let (i, _) = self
-            .content
-            .char_indices()
-            .take(cur_col)
-            .last()
-            .expect("cannot delete anything");
-        self.content.remove(i);
-        self.recompute_rendered();
-    }
-
-    fn append_row(&mut self, other: Row) {
-        self.content += &other.content;
-        self.render += &other.render;
-        self.render_chars += other.render_chars;
-    }
-
     fn split(&mut self, cur_col: usize) -> Row {
         let (i, _) = self
             .content
@@ -127,6 +148,8 @@ pub struct Buffer {
     dirty: bool,
 
     allow_one_past: bool,
+
+    actions: VecDeque<Action>,
 }
 
 pub(crate) fn get_byte_range_from_char_range(s: &str, start: usize, end: usize) -> Range<usize> {
@@ -159,6 +182,7 @@ impl Buffer {
             path: None,
             dirty: false,
             allow_one_past: false,
+            actions: VecDeque::new(),
         }
     }
 
@@ -174,6 +198,7 @@ impl Buffer {
             name,
             dirty: false,
             allow_one_past: false,
+            actions: VecDeque::new(),
         }
     }
 
@@ -227,7 +252,7 @@ impl Buffer {
         })
     }
 
-    pub fn remove_line(&mut self, line: usize) -> String {
+    pub fn do_remove_line(&mut self, line: usize) -> String {
         self.row.remove(line).content
     }
 
@@ -363,7 +388,7 @@ impl Buffer {
         self.clamp_cursor();
     }
 
-    pub fn insert_char(&mut self, ch: char) {
+    fn do_insert_char(&mut self, ch: char) {
         self.dirty = true;
         if self.row.is_empty() {
             self.row.push(Row::new(String::with_capacity(1)));
@@ -375,25 +400,7 @@ impl Buffer {
         self.move_cursor(CursorDirection::Right);
     }
 
-    pub fn delete_char(&mut self) {
-        if self.row.is_empty() || (self.cur_line == 0 && self.cur_col == 0) {
-            return;
-        }
-        self.dirty = true;
-        let row = &mut self.row[self.cur_line];
-        if self.cur_col == 0 && self.cur_line > 0 {
-            let removed = self.row.remove(self.cur_line);
-
-            self.cur_col = self.row[self.cur_line - 1].content_len();
-            self.row[self.cur_line - 1].append_row(removed);
-            self.cur_line -= 1;
-            return;
-        }
-        row.delete_char(self.cur_col);
-        self.move_cursor(CursorDirection::Left)
-    }
-
-    pub fn add_newline(&mut self) {
+    fn do_add_newline(&mut self) {
         if self.row.is_empty() {
             self.row.push(Row::new(String::new()));
         }
@@ -447,48 +454,71 @@ impl Buffer {
 
     /// lines inclusive, columns exclusive
     // TODO: do we want to return the deleted text?
-    pub fn delete_range(&mut self, start: Location, end: Location) {
+    fn do_delete_range(&mut self, start: Location, end: Location) -> String {
         self.dirty = true;
         assert!(start <= end);
+        let mut ret = vec![];
+        let mut last_line = None;
         let range = if start.line() == end.line() {
             let row = &mut self.row[start.line()];
-            row.content.drain(get_byte_range_from_char_range(
+            let drain = row.content.drain(get_byte_range_from_char_range(
                 &row.content,
                 start.col(),
                 end.col(),
             ));
+            ret.push(drain.collect::<String>());
             row.recompute_rendered();
             0..0
         } else {
             let mut end_row = self.row.remove(end.line()).content;
             let row = &mut self.row[start.line()];
-            row.content
-                .drain(char_idx_to_byte_idx(&row.content, start.col()).unwrap_or(0)..);
+            if let Some(start) = char_idx_to_byte_idx(&row.content, start.col()) {
+                let drain = row.content.drain(start..);
+                ret.push(drain.collect());
+            } else {
+                ret.push(String::new());
+            }
 
-            end_row.drain(0..char_idx_to_byte_idx(&end_row, end.col()).unwrap_or(end_row.len()));
+            let drain = end_row
+                .drain(0..char_idx_to_byte_idx(&end_row, end.col()).unwrap_or(end_row.len()));
+            last_line = Some(drain.collect());
             row.content.push_str(&end_row);
 
             row.recompute_rendered();
 
             start.line() + 1..end.line()
         };
-        self.row.drain(range);
+        let drain = self.row.drain(range);
+        ret.extend(drain.map(|x| x.content));
 
         if start <= self.position() && self.position() <= end {
             self.set_position(start.line(), start.col());
         }
+        if let Some(l) = last_line {
+            ret.push(l);
+        }
+        ret.join("\n")
     }
 
     /// lines inclusive, columns exclusive
-    pub fn set_range<I, S>(&mut self, start: Location, end: Location, replacement: I)
+    ///
+    /// returns the lines that were replaced and the new end of the range inserted
+    fn do_set_range<I, S>(
+        &mut self,
+        start: Location,
+        end: Location,
+        replacement: I,
+    ) -> (Vec<String>, Location)
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
         self.dirty = true;
         let mut replacement = replacement.into_iter().map(Into::into);
+        let mut ret = vec![];
+
         // what nasty logic
-        if start.line() == end.line() {
+        let end_loc = if start.line() == end.line() {
             let row = &mut self.row[start.line()];
             let first = replacement.next().unwrap_or_default();
             let second = replacement.next();
@@ -498,23 +528,28 @@ impl Buffer {
                     // same line
                     let row = std::mem::take(row);
                     let mut content = row.content;
-                    content.drain(get_byte_range_from_char_range(
+                    let drain = content.drain(get_byte_range_from_char_range(
                         &content,
                         start.col(),
                         end.col(),
                     ));
+                    ret.push(drain.collect());
                     let idx = char_idx_to_byte_idx(&content, start.col()).unwrap_or(content.len());
                     let content = content.into_bytes();
 
+                    let l = Location::new(start.line(), start.col() + first.chars().count());
                     let content = insert_in_middle(content, idx, first.bytes());
                     let content = String::from_utf8(content).expect("valid utf8");
 
                     self.row[start.line()] = Row::new(content);
+
+                    l
                 }
                 Some(second) => {
                     // split into lines
                     let mut lines: Vec<_> = std::iter::once(second).chain(replacement).collect();
                     let mut last = lines.pop().expect("not empty");
+                    let loc = Location::new(start.line() + lines.len() + 1, last.chars().count());
 
                     let start_idx = char_idx_to_byte_idx(&row.content, start.col())
                         .unwrap_or(row.content_len());
@@ -532,25 +567,28 @@ impl Buffer {
                         start.line() + 1,
                         lines.into_iter().chain(std::iter::once(last)).map(Row::new),
                     );
+
+                    loc
                 }
             }
         } else {
             todo!("set range {start:?} {end:?}")
-        }
+        };
 
-        dbg!(start, self.position());
         if start <= self.position() && self.position() <= end {
             self.set_position(start.line(), start.col());
         }
+
+        (ret, end_loc)
     }
 
-    pub fn remove_lines(&mut self, range: Range<usize>) {
+    fn do_remove_lines(&mut self, range: Range<usize>) -> std::vec::Drain<'_, Row> {
         self.dirty = true;
-        self.row.drain(range);
+        self.row.drain(range)
     }
 
     /// insert `lines` before `start`
-    pub fn insert_lines<I, S>(&mut self, start: usize, lines: I)
+    fn do_insert_lines<I, S>(&mut self, start: usize, lines: I)
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -561,6 +599,124 @@ impl Buffer {
             return;
         }
         self.row = insert_in_middle(std::mem::take(&mut self.row), start, lines);
+    }
+}
+
+// buffer mutating operations
+impl Buffer {
+    pub fn remove_line(&mut self, line: usize) -> String {
+        let line_num = line;
+        let line = self.do_remove_line(line_num);
+        self.actions.push_back(Action::RemoveLine {
+            line_num,
+            line: line.clone(),
+        });
+        line
+    }
+
+    pub fn insert_char(&mut self, ch: char) {
+        self.actions.push_back(Action::InsertChar {
+            inserted: ch,
+            at: self.position(),
+        });
+        self.do_insert_char(ch)
+    }
+
+    pub fn add_newline(&mut self) {
+        self.actions.push_back(Action::AddNewline {
+            at: self.position(),
+        });
+        self.do_add_newline()
+    }
+
+    /// lines inclusive, columns exclusive
+    // TODO: do we want to return the deleted text?
+    pub fn delete_range(&mut self, start: Location, end: Location) {
+        if self.row.is_empty() {
+            return;
+        }
+        let range = self.do_delete_range(start, end);
+        self.actions
+            .push_back(Action::DeleteRange { start, end, range });
+    }
+
+    /// lines inclusive, columns exclusive
+    pub fn set_range<I, S>(&mut self, start: Location, end: Location, replacement: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let (replaced, end) = self.do_set_range(start, end, replacement);
+        self.actions.push_back(Action::SetRange {
+            start,
+            end,
+            replaced,
+        });
+    }
+
+    pub fn remove_lines(&mut self, range: Range<usize>) {
+        let lines = self
+            .do_remove_lines(range.clone())
+            .map(|x| x.content)
+            .collect();
+        self.actions.push_back(Action::RemoveLines { range, lines });
+    }
+
+    /// insert `lines` before `start`
+    pub fn insert_lines<I, S>(&mut self, start: usize, lines: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let before = self.row.len();
+        self.do_insert_lines(start, lines);
+        let after = self.row.len();
+        let count = after - before;
+        self.actions.push_back(Action::InsertLines { start, count });
+    }
+
+    pub fn undo(&mut self) {
+        let Some(action) = self.actions.pop_back() else {
+            return;
+        };
+        self.dirty = true;
+
+        match action {
+            Action::RemoveLine { line_num, line } => {
+                self.do_insert_lines(line_num, std::iter::once(line));
+            }
+            Action::RemoveLines { range, lines } => {
+                self.do_insert_lines(range.start, lines);
+            }
+            Action::InsertChar { inserted, at } => {
+                let line = &mut self.row[at.line()];
+                let idx = char_idx_to_byte_idx(&line.content, at.col()).unwrap();
+                assert_eq!(line.content.remove(idx), inserted);
+                line.recompute_rendered();
+            }
+            Action::AddNewline { at } => {
+                let next = self.row.remove(at.line() + 1);
+                let line = &mut self.row[at.line()];
+                line.content.push_str(&next.content);
+            }
+            Action::DeleteRange {
+                start,
+                end: _,
+                range,
+            } => {
+                self.do_set_range(start, start, range.split('\n'));
+            }
+            Action::SetRange {
+                start,
+                end,
+                replaced,
+            } => {
+                self.do_set_range(start, end, replaced);
+            }
+            Action::InsertLines { start, count } => {
+                self.remove_lines(start..start + count);
+            }
+        }
     }
 }
 
@@ -655,7 +811,8 @@ mod tests {
                 col_off: 0,
                 cur_line: 0,
                 cur_col: 0,
-                allow_one_past: false
+                allow_one_past: false,
+                actions: VecDeque::new(),
             }
         );
     }
@@ -862,42 +1019,6 @@ mod tests {
     }
 
     #[test]
-    fn remove_char_at_start_of_line() {
-        let mut buf = new_buf("this");
-        buf.delete_char();
-        assert_eq!(buf.save(), "this\n");
-        assert_eq!(buf.position(), (0, 0).into());
-    }
-
-    #[test]
-    fn remove_char() {
-        let rows = 24;
-        let cols = 80;
-        let mut buf = new_buf("this");
-        enact(
-            &mut buf,
-            rows,
-            cols,
-            &[(C::Right, (0, 1), (0, 1)), (C::Right, (0, 2), (0, 2))],
-        );
-        buf.delete_char();
-        assert_eq!(buf.save(), "tis\n");
-        assert_eq!(buf.position(), (0, 1).into());
-    }
-
-    #[test]
-    fn remove_linebreak() {
-        let rows = 24;
-        let cols = 80;
-        let mut buf = new_buf("foo\nbar");
-        enact(&mut buf, rows, cols, &[(C::Down, (1, 0), (1, 0))]);
-        buf.delete_char();
-        print_cursor(&mut buf, rows, cols);
-        assert_eq!(buf.save(), "foobar\n");
-        assert_eq!(buf.position(), (0, 3).into());
-    }
-
-    #[test]
     fn add_newline() {
         let rows = 24;
         let cols = 80;
@@ -933,16 +1054,6 @@ mod tests {
         buf.insert_char('h');
         assert!(buf.is_dirty());
         assert_eq!(buf.save(), "h\n");
-    }
-    #[test]
-    fn delete_in_empty_file() {
-        let mut buf = new_buf("");
-        assert!(!buf.is_dirty());
-        buf.delete_char();
-        assert!(!buf.is_dirty());
-        buf.scrub();
-        assert!(!buf.is_dirty());
-        assert_eq!(buf.save(), "");
     }
 
     #[test]
@@ -1045,7 +1156,7 @@ mod tests {
         };
     }
 
-    macro_rules! set_lines_tests {
+    macro_rules! insert_lines_tests {
         ($(
             $name:ident: $buf:literal, $line:expr, $lines:expr, $expected:expr
         )*) => {
@@ -1105,11 +1216,12 @@ mod tests {
         delete_empty_range: "hello world" @ (0,0), (0, 1), (0, 1), "hello world\n", (0,0)
         delete_with_cursor_inside_range: "hello world" @ (0, 2), (0, 1), (0, 3), "hlo world\n", (0, 1)
         delete_with_cursor_inside_range_multiline: "foo\nbar\nbaz" @ (1, 1), (0, 1), (2, 1), "faz\n", (0, 1)
+        delete_newline: "foo\nbar" @ (0,0), (0, 3), (1,0), "foobar\n", (0,0)
     }
 
     const EMPTY: [&str; 0] = [];
 
-    set_lines_tests! {
+    insert_lines_tests! {
         set_lines_empty: "hello world", 0, EMPTY, "hello world\n"
         set_lines_empty_buf: "", 1, ["hello world"], "hello world\n"
     }
@@ -1120,5 +1232,75 @@ mod tests {
         set_range_insert_two_lines: "hello world" @ (0, 5), (0, 5), (0, 6), [",", "..."], "hello,\n...world\n" @ (0, 5)
         set_range_insert_three_lines: "hello world" @ (0, 5), (0, 5), (0, 6), [",", "to", "this "], "hello,\nto\nthis world\n" @ (0, 5)
         // TODO: multi line deletion range
+    }
+
+    macro_rules! undo_tests {
+        ($(
+            $name:ident() $buffer:ident = $buf:literal => $e:block
+        )* ) => {
+            $(
+                #[test]
+                fn $name() {
+                    let orig = if $buf.ends_with('\n') {
+                        $buf
+                    } else {
+                        concat!($buf, "\n")
+                    };
+                    let mut $buffer = new_buf(orig);
+                    $e;
+                    $buffer.undo();
+                    assert_eq!($buffer.save(), orig, "undo didn't restore");
+                }
+            )*
+        };
+    }
+
+    undo_tests! {
+        undo_nothing() buffer = "alksdj" => {}
+        undo_insert_char() buffer = "hello world" => {
+            buffer.set_position(0, 5);
+            buffer.insert_char(',');
+        }
+        undo_remove_line() buffer = "hello\nworld\nbar" => {
+            buffer.remove_line(1);
+        }
+        undo_remove_lines() buffer = "foo\nbar\nbaz" => {
+            buffer.remove_lines(0..2);
+        }
+        undo_add_newline() buffer = "foobar" => {
+            buffer.set_position(0, 3);
+            buffer.add_newline();
+        }
+        undo_delete_range1() buffer = "foobar" => {
+            buffer.delete_range(Location::new(0, 2), Location::new(0, 3));
+            assert_eq!(buffer.save(), "fobar\n");
+        }
+        undo_delete_range2() buffer = "foo\nbar" => {
+            buffer.delete_range(Location::new(0, 3), Location::new(1, 0));
+            assert_eq!(buffer.save(), "foobar\n");
+        }
+        undo_delete_range3() buffer = "foo\nbar\nbam" => {
+            buffer.delete_range(Location::new(0, 2), Location::new(2, 1));
+            assert_eq!(buffer.save(), "foam\n");
+        }
+        undo_set_range1() buffer = "hello" => {
+            buffer.set_range(Location::new(0, 1), Location::new(0, 2), ["a"]);
+        }
+        undo_set_range2() buffer = "hello" => {
+            buffer.set_range(Location::new(0, 1), Location::new(0, 2), ["ab"]);
+        }
+
+        undo_insert_lines1() buffer = "hello\nworld" => {
+            buffer.insert_lines(0, ["a"]);
+            assert_eq!(buffer.save(), "a\nhello\nworld\n");
+        }
+        undo_insert_lines2() buffer = "hello\nworld" => {
+            buffer.insert_lines(1, ["a"]);
+            assert_eq!(buffer.save(), "hello\na\nworld\n");
+        }
+        undo_insert_lines3() buffer = "hello\nworld" => {
+            buffer.insert_lines(1, ["a", "b"]);
+        }
+
     }
 }

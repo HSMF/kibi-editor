@@ -326,7 +326,7 @@ trait ConfigureKeymap {
             mut a, ['A'] => {
                 let pos = a.buf.position();
                 a.set_mode(ModeState::Insert);
-                let col = a.buf.get_row(pos.line()).map(str::len).unwrap_or(0);
+                let col = a.buf.get_row(pos.line()).map(|s| s.chars().count()).unwrap_or(0);
                 a.buf.set_position(pos.line(), col);
             };
             mut a, ['I'] => {
@@ -394,6 +394,9 @@ trait ConfigureKeymap {
                 let pos = a.buf.position() + (0, 1);
                 a.buf.set_position(pos.line(), pos.col());
                 a.buf.set_range(pos, pos, reg.value.lines());
+            };
+            a, ['u'] => {
+                a.buf.undo();
             };
 
             a, ['h'] => do_simple_motion(a, Left::new());
@@ -558,7 +561,19 @@ trait ConfigureKeymap {
         use Input as I;
         self.add_keymap(mode, [I::Escape], |mut a| a.set_mode(ModeState::Normal));
         self.configure_arrow_keys(mode);
-        self.add_keymap(mode, [I::Backspace], |a| a.buf.delete_char());
+        self.add_keymap(mode, [I::Backspace], |a| {
+            let pos = a.buf.position();
+            let mut start = pos - (0, 1);
+            if start == pos && pos.line() > 0 {
+                let col = a
+                    .buf
+                    .get_row(pos.line() - 1)
+                    .map(|s| s.chars().count())
+                    .unwrap_or(0);
+                start = Location::new(pos.line() - 1, col);
+            }
+            a.buf.delete_range(start, pos);
+        });
         self.add_keymap(mode, [I::Enter], |a| a.buf.add_newline());
     }
 
@@ -598,7 +613,6 @@ trait ConfigureKeymap {
         use Input as I;
         self.add_keymap(mode, [I::Escape], |mut a| a.set_mode(ModeState::Normal));
         self.configure_arrow_keys(mode);
-        self.add_keymap(mode, [I::Backspace], |a| a.buf.delete_char());
         self.add_keymap(mode, [I::Enter], |a| a.buf.add_newline());
         self.add_keymap(mode, [I::Char('h')], |a| a.buf.move_cursor(C::Left));
         self.add_keymap(mode, [I::Char('j')], |a| a.buf.move_cursor(C::Down));
@@ -1092,6 +1106,33 @@ mod tests {
         vim.handle_input(&mut buf, Input::Char(' ')).no_break();
         assert_eq!(vim.mode(), Mode::Insert);
         assert_eq!(buf.save(), "h ello world\n");
+    }
+
+    #[test]
+    fn insert_backspace() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("this");
+        feedkeys(&mut vim, &mut buf, "lli").no_break();
+        vim.handle_input(&mut buf, Input::Backspace).no_break();
+        assert_eq!(buf.save(), "tis\n");
+
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("foo\nbar");
+        feedkeys(&mut vim, &mut buf, "ji").no_break();
+        vim.handle_input(&mut buf, Input::Backspace).no_break();
+        assert_eq!(buf.save(), "foobar\n");
+
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("foo\nbar");
+        feedkeys(&mut vim, &mut buf, "i").no_break();
+        vim.handle_input(&mut buf, Input::Backspace).no_break();
+        assert_eq!(buf.save(), "foo\nbar\n");
+
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("");
+        feedkeys(&mut vim, &mut buf, "i").no_break();
+        vim.handle_input(&mut buf, Input::Backspace).no_break();
+        assert_eq!(buf.save(), "");
     }
 
     #[test]

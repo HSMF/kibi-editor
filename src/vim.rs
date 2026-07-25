@@ -377,30 +377,33 @@ trait ConfigureKeymap {
         use Input as I;
         macro_rules! conf {
             (
-               $self:expr, $prefix:expr,
-               [ $($ch:literal),* $(,)? ] => $motion:ident, $f:expr
+               $self:expr, $prefix:expr, $f:expr,
+               $([ $($ch:literal),* $(,)? ] => $motion:ident;)*
             ) => {
-                $self.configure_motion(
-                    $prefix,
-                    [ $(I::Char($ch)),* ],
-                    $motion::new(),
-                    $f.clone()
+                $(
+                    $self.configure_motion(
+                        $prefix,
+                        [ $(I::Char($ch)),* ],
+                        $motion::new(),
+                        $f.clone()
                     );
+                )*
             };
         }
 
-        conf!(self, prefix, ['h'] => Left, f);
-        conf!(self, prefix, ['j'] => Down, f);
-        conf!(self, prefix, ['k'] => Up, f);
-        conf!(self, prefix, ['l'] => Right, f);
-
-        conf!(self, prefix, ['w'] => Word, f);
-        conf!(self, prefix, ['W'] => BigWord, f);
-        conf!(self, prefix, ['b'] => Back, f);
-        conf!(self, prefix, ['B'] => BigBack, f);
-
-        conf!(self, prefix, ['$'] => EndOfLine, f);
-        conf!(self, prefix, ['0'] => StartOfLine, f);
+        conf! {
+            self, prefix, f,
+            ['h'] => Left;
+            ['j'] => Down;
+            ['k'] => Up;
+            ['l'] => Right;
+            ['w'] => Word;
+            ['W'] => BigWord;
+            ['b'] => Back;
+            ['B'] => BigBack;
+            ['$'] => EndOfLine;
+            ['0'] => StartOfLine;
+        }
     }
 
     fn configure_insert_mode(&mut self) {

@@ -398,6 +398,9 @@ trait ConfigureKeymap {
             a, ['u'] => {
                 a.buf.undo();
             };
+            a, [CTRL(b'r')] => {
+                a.buf.redo();
+            };
 
             a, ['h'] => do_simple_motion(a, Left::new());
             a, ['j'] => do_simple_motion(a, Down::new());

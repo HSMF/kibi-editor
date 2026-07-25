@@ -11,7 +11,7 @@
 - [x] `x`
 - [x] `c<motion>`
 - [x] `A` / `I`
-- [ ] `u` / `<C-R>`
+- [x] `u` / `<C-R>`
 
 ## options
 

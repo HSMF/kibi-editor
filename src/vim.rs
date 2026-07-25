@@ -9,8 +9,8 @@ use crate::{
     ctrl_key,
     location::Location,
     motion::{
-        self, Back, BigBack, BigWord, Down, EndOfLine, Left, Motion, Right, SeekUntilChar,
-        StartOfLine, Up, Word,
+        Back, BigBack, BigWord, Down, EndOfLine, Left, Motion, Right, SeekUntilChar, StartOfLine,
+        Up, Word,
     },
     trie::{Index, Trie},
 };
@@ -153,6 +153,114 @@ enum LookupKeymap<'a> {
     NoMatch,
 }
 
+macro_rules! pattern {
+    () => {
+        std::iter::empty()
+    };
+    ($ch:literal $($tt:tt)*) => {
+        std::iter::once(
+            Index::Index(Input::Char($ch))
+        ).chain(
+            pattern!($($tt)*)
+        )
+    };
+    (ESC $($tt:tt)*) => {
+        std::iter::once(Index::Index(Input::Escape)).chain(
+            pattern!($($tt)*)
+        )
+    };
+    (<Up> $($tt:tt)*) => {
+        std::iter::once(Index::Index(Input::Arrow(CursorDirection::Up))).chain(
+            pattern!($($tt)*)
+        )
+    };
+    (<Down> $($tt:tt)*) => {
+        std::iter::once(Index::Index(Input::Arrow(CursorDirection::Down))).chain(
+            pattern!($($tt)*)
+        )
+    };
+    (<Left> $($tt:tt)*) => {
+        std::iter::once(Index::Index(Input::Arrow(CursorDirection::Left))).chain(
+            pattern!($($tt)*)
+        )
+    };
+    (<Right> $($tt:tt)*) => {
+        std::iter::once(Index::Index(Input::Arrow(CursorDirection::Right))).chain(
+            pattern!($($tt)*)
+        )
+    };
+    (<PageUp> $($tt:tt)*) => {
+        std::iter::once(Index::Index(Input::PageUp)).chain(
+            pattern!($($tt)*)
+        )
+    };
+    (<PageDown> $($tt:tt)*) => {
+        std::iter::once(Index::Index(Input::PageDown)).chain(
+            pattern!($($tt)*)
+        )
+    };
+    (CTRL($x:literal) $($tt:tt)*) => {
+        std::iter::once(Index::Index(ctrl_key($x))).chain(
+            pattern!($($tt)*)
+        )
+    };
+    (BS $($tt:tt)*) => {
+        std::iter::once(Index::Index(Input::Backspace)).chain(
+            pattern!($($tt)*)
+        )
+    };
+    (ANY $($tt:tt)*) => {
+        std::iter::once(Index::<Input>::Any).chain(
+            pattern!($($tt)*)
+        )
+    };
+}
+macro_rules! keymaps {
+    ($t:ty, $pat:ident, $act:ident => $e:expr,) => {};
+    (
+        $t:ty, $pat:ident, $act:ident => $e:expr,
+        [ $($pattern:tt)* ] => $action:expr;
+        $($tt:tt)*
+    ) => {
+        {
+        let $pat = pattern!($($pattern)*);
+        let $act = |_: $t| $action;
+        let _ = $pat;
+        let _ = $act;
+        $e
+        }
+        keymaps!($t, $pat, $act => $e, $($tt)*)
+    };
+    (
+        $t:ty, $pat:ident, $act:ident => $e:expr,
+        $state:ident, [ $($pattern:tt)* ] => $action:expr;
+        $($tt:tt)*
+    ) => {
+        {
+        let $pat = pattern!($($pattern)*);
+        let $act = |$state: $t| $action;
+        let _ = $pat;
+        let _ = $act;
+        $e
+        }
+        keymaps!($t, $pat, $act => $e, $($tt)*)
+    };
+    (
+        $t:ty, $pat:ident, $act:ident => $e:expr,
+        mut $state:ident, [ $($pattern:tt)* ] => $action:expr;
+        $($tt:tt)*
+    ) => {
+        {
+        let $pat = pattern!($($pattern)*);
+        let $act = |mut $state: $t| $action;
+        let _ = $pat;
+        let _ = $act;
+        $e
+        }
+        keymaps!($t, $pat, $act => $e, $($tt)*)
+    };
+}
+
 trait ConfigureKeymap {
     fn add_keymap<F: Fn(MapArgs) + 'static>(
         &mut self,
@@ -179,110 +287,142 @@ trait ConfigureKeymap {
         let mode = Mode::Normal;
         use CursorDirection as C;
         use Input as I;
-        self.add_keymap(mode, [I::Escape], |mut a| a.set_mode(ModeState::Normal));
-        self.add_keymap(mode, [ctrl_key(b'u')], |a| {
-            for _ in 0..12 {
-                a.buf.move_cursor(C::Up)
+
+        fn do_simple_motion(a: MapArgs, motion: impl Motion) {
+            if let Some(next) = motion.next(a.buf) {
+                a.buf.set_position(next.line(), next.col());
             }
-        });
-        self.add_keymap(mode, [ctrl_key(b'd')], |a| {
-            for _ in 0..12 {
-                a.buf.move_cursor(C::Down)
-            }
-        });
-        self.add_keymap(mode, [I::Char('i')], |mut a| a.set_mode(ModeState::Insert));
-        self.add_keymap(mode, [I::Char('v')], |mut a| a.set_mode(ModeState::Visual));
-        self.add_keymap(mode, [I::Char('g'), I::Char('g')], |a| {
-            buf_seek_line(a.buf, 0)
-        });
-        self.add_keymap(mode, [I::Char('G')], |a| {
-            buf_seek_line(a.buf, a.buf.num_lines())
-        });
-        self.add_keymap(mode, [I::Char('a')], |mut a| {
-            let (line, col) = a.buf.position().destruct();
-            a.set_mode(ModeState::Insert);
-            a.buf.set_position(line, col + 1);
-        });
-        self.add_keymap(mode, [I::Char('o')], |mut a| {
-            let line = a.buf.position().line();
-            a.buf.insert_lines(line + 1, [""]);
-            a.buf.set_position(line + 1, 0);
+        }
 
-            a.set_mode(ModeState::Insert);
-        });
-        self.add_keymap(mode, [I::Char('y'), I::Char('y')], |a| {
-            let line = a.buf.position().line();
-            let line = a.buf.get_row(line).unwrap_or("").to_owned();
-            a.state.registers.set_register('"', line, true);
-        });
-        self.add_keymap(mode, [I::Char('d'), I::Char('d')], |a| {
-            let line = a.buf.position().line();
-            let content = a.buf.remove_line(line);
-            a.state.registers.set_register('"', content, true);
-        });
-        self.add_keymap(mode, [I::Char('x')], |a| {
-            let pos = a.buf.position();
-            let end = Location::new(pos.line(), pos.col() + 1);
-            let existing = a.buf.get_range(pos, end).next().unwrap_or_default();
-            a.state
-                .registers
-                .set_register('"', existing.to_owned(), false);
-            a.buf.delete_range(pos, end);
-        });
-
-        self.add_keymap_op_pending(mode, [Index::Index(I::Char('r')), Index::Any], |a| {
-            let input = a.cur_input.last().expect("to have last input");
-            match input {
-                I::Char(ch) => {
-                    let mut tmp = [0; 4];
-                    let s = ch.encode_utf8(&mut tmp);
-
-                    let loc = a.buf.position();
-
-                    a.buf.set_range(loc, loc + (0, 1), [s]);
+        keymaps! {
+            MapArgs, pat, act => self.add_keymap_op_pending(Mode::Normal, pat, act),
+            mut a, [ESC] => a.set_mode(ModeState::Normal);
+            a, [CTRL(b'u')] => {
+                for _ in 0..12 {
+                    a.buf.move_cursor(C::Up)
                 }
-                I::Enter => {
-                    let loc = a.buf.position();
-
-                    a.buf.set_range(loc, loc + (0, 1), ["", ""]);
+            };
+            a, [CTRL(b'd')] => {
+                for _ in 0..12 {
+                    a.buf.move_cursor(C::Down)
                 }
-                I::Control(_)
-                | I::Arrow(..)
-                | I::Escape
-                | I::Backspace
-                | I::PageUp
-                | I::PageDown => {}
-            }
-        });
-
-        self.add_keymap(mode, [I::Char('p')], |a| {
-            let line = a.buf.position().line();
-            let reg = a.state.registers.get_register('"');
-            if reg.yanked_linewise {
-                a.buf.insert_lines(line + 1, reg.value.lines());
+            };
+            mut a, ['i'] => a.set_mode(ModeState::Insert);
+            mut a, ['v'] => a.set_mode(ModeState::Visual);
+            a, ['g' 'g'] => buf_seek_line(a.buf, 0);
+            a, ['G'] => buf_seek_line(a.buf, a.buf.num_lines());
+            mut a, ['a'] => {
+                let (line, col) = a.buf.position().destruct();
+                a.set_mode(ModeState::Insert);
+                a.buf.set_position(line, col + 1);
+            };
+            mut a, ['o'] => {
+                let line = a.buf.position().line();
+                a.buf.insert_lines(line + 1, [""]);
                 a.buf.set_position(line + 1, 0);
-                return;
-            }
-            let pos = a.buf.position() + (0, 1);
-            a.buf.set_position(pos.line(), pos.col());
-            a.buf.set_range(pos, pos, reg.value.lines());
-        });
-        self.configure_simple_motion([I::Char('h')], |_| motion::Left);
-        self.configure_simple_motion([I::Char('j')], |_| motion::Down);
-        self.configure_simple_motion([I::Char('k')], |_| motion::Up);
-        self.configure_simple_motion([I::Char('l')], |_| motion::Right);
-        self.configure_simple_motion([I::Char('w')], |_| motion::Word::new());
-        self.configure_simple_motion([I::Char('W')], |_| motion::BigWord::new());
-        self.configure_simple_motion([I::Char('b')], |_| motion::Back::new());
-        self.configure_simple_motion([I::Char('B')], |_| motion::BigBack::new());
-        self.configure_simple_motion([I::Char('$')], |_| EndOfLine::new());
-        self.configure_simple_motion([I::Char('0')], |_| StartOfLine::new());
-        self.configure_simple_motion_op_pending([Index::Index(I::Char('f')), Index::Any], |a| {
-            match a.cur_input.last().expect("have last char") {
-                I::Char(ch) => Some(SeekUntilChar::new(*ch)),
-                _ => None,
-            }
-        });
+
+                a.set_mode(ModeState::Insert);
+            };
+            a, ['y' 'y'] => {
+                let line = a.buf.position().line();
+                let line = a.buf.get_row(line).unwrap_or("").to_owned();
+                a.state.registers.set_register('"', line, true);
+            };
+            a, ['d' 'd'] => {
+                let line = a.buf.position().line();
+                let content = a.buf.remove_line(line);
+                a.state.registers.set_register('"', content, true);
+            };
+            a, ['x'] => {
+                let pos = a.buf.position();
+                let end = Location::new(pos.line(), pos.col() + 1);
+                let existing = a.buf.get_range(pos, end).next().unwrap_or_default();
+                a.state
+                    .registers
+                    .set_register('"', existing.to_owned(), false);
+                a.buf.delete_range(pos, end);
+            };
+            a, ['r' ANY] => {
+                let input = a.cur_input.last().expect("to have last input");
+                match input {
+                    I::Char(ch) => {
+                        let mut tmp = [0; 4];
+                        let s = ch.encode_utf8(&mut tmp);
+
+                        let loc = a.buf.position();
+
+                        a.buf.set_range(loc, loc + (0, 1), [s]);
+                    }
+                    I::Enter => {
+                        let loc = a.buf.position();
+
+                        a.buf.set_range(loc, loc + (0, 1), ["", ""]);
+                    }
+                    I::Control(_)
+                    | I::Arrow(..)
+                    | I::Escape
+                    | I::Backspace
+                    | I::PageUp
+                    | I::PageDown => {}
+                }
+            };
+            a, ['p'] => {
+                let line = a.buf.position().line();
+                let reg = a.state.registers.get_register('"');
+                if reg.yanked_linewise {
+                    a.buf.insert_lines(line + 1, reg.value.lines());
+                    a.buf.set_position(line + 1, 0);
+                    return;
+                }
+                let pos = a.buf.position() + (0, 1);
+                a.buf.set_position(pos.line(), pos.col());
+                a.buf.set_range(pos, pos, reg.value.lines());
+            };
+
+            a, ['h'] => do_simple_motion(a, Left::new());
+            a, ['j'] => do_simple_motion(a, Down::new());
+            a, ['k'] => do_simple_motion(a, Up::new());
+            a, ['l'] => do_simple_motion(a, Right::new());
+            a, ['w'] => do_simple_motion(a, Word::new());
+            a, ['W'] => do_simple_motion(a, BigWord::new());
+            a, ['b'] => do_simple_motion(a, Back::new());
+            a, ['B'] => do_simple_motion(a, BigBack::new());
+            a, ['$'] => do_simple_motion(a, EndOfLine::new());
+            a, ['0'] => do_simple_motion(a, StartOfLine::new());
+            a, ['f' ANY] => {
+                let motion = match a.cur_input.last().expect("have last char") {
+                    I::Char(ch) => Some(SeekUntilChar::new(*ch)),
+                    _ => None,
+                };
+                do_simple_motion(a, motion);
+            };
+            mut a, [':'] => {
+                a.set_mode(ModeState::Command {
+                    cmdline: String::new(),
+                    action: CommandAction::Command,
+                })
+            };
+            a, ['n'] => {
+                a.state
+                    .execute_search(a.buf, &a.state.registers.get_register('/').value);
+            };
+            a, ['N'] =>  {
+                a.state
+                    .execute_search_previous(a.buf, &a.state.registers.get_register('/').value);
+            };
+            mut a, ['/'] => {
+                a.set_mode(ModeState::Command {
+                    cmdline: String::new(),
+                    action: CommandAction::Search,
+                })
+            };
+            mut a, ['?'] => {
+                a.set_mode(ModeState::Command {
+                    cmdline: String::new(),
+                    action: CommandAction::SearchPrevious,
+                })
+            };
+        }
 
         fn sort_location(start: Location, end: Location) -> (Location, Location) {
             if end < start {
@@ -317,65 +457,7 @@ trait ConfigureKeymap {
             let s = join_iter(a.buf.get_range(start, end));
             a.state.registers.set_register('"', s, false);
         });
-        self.add_keymap(mode, [I::Char(':')], |mut a| {
-            a.set_mode(ModeState::Command {
-                cmdline: String::new(),
-                action: CommandAction::Command,
-            })
-        });
-        self.add_keymap(mode, [I::Char('n')], |a| {
-            a.state
-                .execute_search(a.buf, &a.state.registers.get_register('/').value);
-        });
-        self.add_keymap(mode, [I::Char('N')], |a| {
-            a.state
-                .execute_search_previous(a.buf, &a.state.registers.get_register('/').value);
-        });
-        self.add_keymap(mode, [I::Char('/')], |mut a| {
-            a.set_mode(ModeState::Command {
-                cmdline: String::new(),
-                action: CommandAction::Search,
-            })
-        });
-        self.add_keymap(mode, [I::Char('?')], |mut a| {
-            a.set_mode(ModeState::Command {
-                cmdline: String::new(),
-                action: CommandAction::SearchPrevious,
-            })
-        });
         self.configure_arrow_keys(mode);
-    }
-
-    fn configure_simple_motion<M>(
-        &mut self,
-        mapping: impl IntoIterator<Item = Input>,
-        motion: impl Fn(&MapArgs) -> M + 'static,
-    ) where
-        M: Motion,
-    {
-        let mode = Mode::Normal;
-        self.add_keymap(mode, mapping, move |a| {
-            let motion = motion(&a);
-            if let Some(next) = motion.next(a.buf) {
-                a.buf.set_position(next.line(), next.col());
-            }
-        });
-    }
-
-    fn configure_simple_motion_op_pending<M>(
-        &mut self,
-        mapping: impl IntoIterator<Item = Index<Input>>,
-        motion: impl Fn(&MapArgs) -> M + 'static,
-    ) where
-        M: Motion,
-    {
-        let mode = Mode::Normal;
-        self.add_keymap_op_pending(mode, mapping, move |a| {
-            let motion = motion(&a);
-            if let Some(next) = motion.next(a.buf) {
-                a.buf.set_position(next.line(), next.col());
-            }
-        });
     }
 
     fn configure_motion<F, M, MF>(
@@ -409,70 +491,18 @@ trait ConfigureKeymap {
     where
         F: Fn(MapArgs, Location, Location, bool) + 'static + Clone,
     {
-        use Input as I;
-        macro_rules! pattern {
-            () => {
-                std::iter::empty()
-            };
-            ($ch:literal $($tt:tt)*) => {
-                std::iter::once(
-                    Index::Index(I::Char($ch))
-                ).chain(
-                    pattern!($($tt)*)
-                )
-            };
-            (ANY $($tt:tt)*) => {
-                std::iter::once(Index::<I>::Any).chain(
-                    pattern!($($tt)*)
-                )
-            };
-        }
-
-        macro_rules! conf {
-            (
-               $self:expr, $prefix:expr, $f:expr,
-            ) => {};
-            (
-               $self:expr, $prefix:expr, $f:expr,
-               [ $($pattern:tt)* ] => $motion:ident;
-               $($tt:tt)*
-            ) => {
-                    $self.configure_motion(
-                        $prefix,
-                        pattern!($($pattern)*),
-                        |_| $motion::new(),
-                        $f.clone()
-                    );
-                    conf!($self, $prefix, $f, $($tt)*);
-            };
-
-            (
-               $self:expr, $prefix:expr, $f:expr,
-               $state:ident, [ $($pattern:tt)* ] => $motion:expr;
-               $($tt:tt)*
-            ) => {
-                    $self.configure_motion(
-                        $prefix,
-                        pattern!($($pattern)*),
-                        |$state| $motion,
-                        $f.clone()
-                    );
-                    conf!($self, $prefix, $f, $($tt)*);
-            };
-        }
-
-        conf! {
-            self, prefix, f,
-            ['h'] => Left;
-            ['j'] => Down;
-            ['k'] => Up;
-            ['l'] => Right;
-            ['w'] => Word;
-            ['W'] => BigWord;
-            ['b'] => Back;
-            ['B'] => BigBack;
-            ['$'] => EndOfLine;
-            ['0'] => StartOfLine;
+        keymaps! {
+            &MapArgs, pat, act => self.configure_motion(prefix, pat, act, f.clone()),
+            ['h'] => Left::new();
+            ['j'] => Down::new();
+            ['k'] => Up::new();
+            ['l'] => Right::new();
+            ['w'] => Word::new();
+            ['W'] => BigWord::new();
+            ['b'] => Back::new();
+            ['B'] => BigBack::new();
+            ['$'] => EndOfLine::new();
+            ['0'] => StartOfLine::new();
             a, ['f' ANY] => {
                 a.cur_input
                     .last()

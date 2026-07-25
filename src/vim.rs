@@ -211,6 +211,7 @@ trait ConfigureKeymap {
 
             a.set_mode(ModeState::Insert);
         });
+        // TODO: make these motions
         self.add_keymap(mode, [I::Char('0')], |a| {
             let line = a.buf.position().line();
             a.buf.set_position(line, 0);
@@ -232,8 +233,12 @@ trait ConfigureKeymap {
         });
         self.add_keymap(mode, [I::Char('x')], |a| {
             let pos = a.buf.position();
-            a.buf
-                .delete_range(pos, Location::new(pos.line(), pos.col() + 1));
+            let end = Location::new(pos.line(), pos.col() + 1);
+            let existing = a.buf.get_range(pos, end).next().unwrap_or_default();
+            a.state
+                .registers
+                .set_register('"', existing.to_owned(), false);
+            a.buf.delete_range(pos, end);
         });
 
         self.add_keymap_op_pending(mode, [Index::Index(I::Char('r')), Index::Any], |a| {
@@ -1162,5 +1167,15 @@ mod tests {
         eprintln!("===");
         feedkeys(&mut vim, &mut buf, "N").no_break();
         assert_eq!(buf.position(), Location::new(1, 5));
+    }
+
+    #[test]
+    fn x() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("hello");
+        feedkeys(&mut vim, &mut buf, "lx").no_break();
+        assert_eq!(buf.save(), "hllo\n");
+        assert_eq!(buf.position(), (0, 1).into());
+        assert_eq!(vim.state.registers.get_register('"').value, "e");
     }
 }

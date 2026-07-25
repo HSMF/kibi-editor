@@ -8,7 +8,9 @@ use crate::{
     buffer::{self, Buffer},
     ctrl_key,
     location::Location,
-    motion::{self, Back, BigBack, BigWord, Down, Left, Motion, Right, Up, Word},
+    motion::{
+        self, Back, BigBack, BigWord, Down, EndOfLine, Left, Motion, Right, StartOfLine, Up, Word,
+    },
     trie::{Index, Trie},
 };
 
@@ -207,16 +209,6 @@ trait ConfigureKeymap {
 
             a.set_mode(ModeState::Insert);
         });
-        // TODO: make these motions
-        self.add_keymap(mode, [I::Char('0')], |a| {
-            let line = a.buf.position().line();
-            a.buf.set_position(line, 0);
-        });
-        self.add_keymap(mode, [I::Char('$')], |a| {
-            let line = a.buf.position().line();
-            let last = a.buf.get_row(line).unwrap_or("").len();
-            a.buf.set_position(line, last);
-        });
         self.add_keymap(mode, [I::Char('y'), I::Char('y')], |a| {
             let line = a.buf.position().line();
             let line = a.buf.get_row(line).unwrap_or("").to_owned();
@@ -263,7 +255,6 @@ trait ConfigureKeymap {
         });
 
         self.add_keymap(mode, [I::Char('p')], |a| {
-            // TODO: not quite correct
             let line = a.buf.position().line();
             let reg = a.state.registers.get_register('"');
             if reg.yanked_linewise {
@@ -283,6 +274,8 @@ trait ConfigureKeymap {
         self.configure_simple_motion([I::Char('W')], motion::BigWord::new());
         self.configure_simple_motion([I::Char('b')], motion::Back::new());
         self.configure_simple_motion([I::Char('B')], motion::BigBack::new());
+        self.configure_simple_motion([I::Char('$')], EndOfLine::new());
+        self.configure_simple_motion([I::Char('0')], StartOfLine::new());
 
         fn sort_location(start: Location, end: Location) -> (Location, Location) {
             if end < start {
@@ -405,6 +398,9 @@ trait ConfigureKeymap {
         conf!(self, prefix, ['W'] => BigWord, f);
         conf!(self, prefix, ['b'] => Back, f);
         conf!(self, prefix, ['B'] => BigBack, f);
+
+        conf!(self, prefix, ['$'] => EndOfLine, f);
+        conf!(self, prefix, ['0'] => StartOfLine, f);
     }
 
     fn configure_insert_mode(&mut self) {

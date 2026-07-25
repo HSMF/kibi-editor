@@ -33,6 +33,22 @@ where
     }
 }
 
+macro_rules! impl_new {
+    ($name:ident) => {
+        impl $name {
+            pub fn new() -> Self {
+                Self
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+    };
+}
+
 pub struct Left;
 pub struct Right;
 pub struct Up;
@@ -56,17 +72,7 @@ macro_rules! impl_motion {
             }
         }
 
-        impl $for {
-            pub fn new() -> Self {
-                Self
-            }
-        }
-
-        impl Default for $for {
-            fn default() -> $for {
-                $for::new()
-            }
-        }
+        impl_new!($for);
     };
 }
 
@@ -75,6 +81,31 @@ impl_motion!(Right, pos => pos + (0, 1), linewise = false);
 
 impl_motion!(Up, pos => pos - (1, 0), linewise = true);
 impl_motion!(Down, pos => pos + (1, 0), linewise = true);
+
+pub struct EndOfLine;
+pub struct StartOfLine;
+
+impl_new!(EndOfLine);
+impl_new!(StartOfLine);
+
+impl Motion for EndOfLine {
+    fn next(&self, buf: &Buffer) -> Option<Location> {
+        let pos = buf.position();
+        let col = buf.get_row(pos.line()).map(str::len).unwrap_or(0);
+        Some(Location::new(pos.line(), col))
+    }
+}
+
+impl Motion for StartOfLine {
+    fn next(&self, buf: &Buffer) -> Option<Location> {
+        let pos = buf.position();
+        if pos.col() == 0 {
+            None
+        } else {
+            Some(Location::new(pos.line(), 0))
+        }
+    }
+}
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum CharClass {

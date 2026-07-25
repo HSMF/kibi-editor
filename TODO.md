@@ -10,7 +10,14 @@
 - [x] `r`
 - [x] `x`
 - [x] `c<motion>`
+- [x] `A` / `I`
+- [ ] `u` / `<C-R>`
 
 ## options
 
 - `expandtab` (sorry Qwendu)
+
+## UI 
+
+- [ ] warn if trying to quit out from a dirty buffer
+- [ ] fix rendering of large lines

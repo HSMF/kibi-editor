@@ -323,6 +323,23 @@ trait ConfigureKeymap {
 
                 a.set_mode(ModeState::Insert);
             };
+            mut a, ['A'] => {
+                let pos = a.buf.position();
+                a.set_mode(ModeState::Insert);
+                let col = a.buf.get_row(pos.line()).map(str::len).unwrap_or(0);
+                a.buf.set_position(pos.line(), col);
+            };
+            mut a, ['I'] => {
+                let pos = a.buf.position();
+                a.set_mode(ModeState::Insert);
+                let line = a.buf.get_row(pos.line()).unwrap_or("");
+                let col = line.chars()
+                    .enumerate()
+                    .find(|(_, ch)| !ch.is_whitespace())
+                    .map(|x| x.0)
+                    .unwrap_or(line.len());
+                a.buf.set_position(pos.line(), col);
+            };
             a, ['y' 'y'] => {
                 let line = a.buf.position().line();
                 let line = a.buf.get_row(line).unwrap_or("").to_owned();
@@ -1365,5 +1382,28 @@ mod tests {
             "use anyhow::anyhow;\nuse log::LevelFilter;"
         );
         assert!(vim.state.registers.get_register('"').yanked_linewise);
+    }
+
+    #[test]
+    fn insert_at_end() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("hello world");
+        feedkeys(&mut vim, &mut buf, "A").no_break();
+        assert_eq!(vim.mode(), Mode::Insert);
+        assert_eq!(buf.position(), Location::new(0, 11));
+    }
+
+    #[test]
+    fn insert_at_start() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("   hello world");
+        feedkeys(&mut vim, &mut buf, "wwI").no_break();
+        assert_eq!(vim.mode(), Mode::Insert);
+        assert_eq!(buf.position(), Location::new(0, 3));
+
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("   ");
+        feedkeys(&mut vim, &mut buf, "I").no_break();
+        assert_eq!(buf.position(), Location::new(0, 3));
     }
 }

@@ -2,6 +2,10 @@ use crate::{buffer::Buffer, location::Location};
 
 pub trait Motion {
     fn next(&self, buf: &Buffer) -> Option<Location>;
+
+    fn linewise(&self) -> bool {
+        false
+    }
 }
 
 trait FindIdxExt: Iterator {
@@ -28,6 +32,49 @@ where
         (idx, None)
     }
 }
+
+pub struct Left;
+pub struct Right;
+pub struct Up;
+pub struct Down;
+
+macro_rules! impl_motion {
+    ($for:ident, $pos:ident => $e:expr, linewise = $linewise:literal) => {
+        impl Motion for $for {
+            fn next(&self, buf: &Buffer) -> Option<Location> {
+                let $pos = buf.position();
+                let pos = $e;
+                if $linewise {
+                    Some(pos).filter(|pos| pos.line() == 0 || pos.line() < buf.num_lines())
+                } else {
+                    Some(pos).filter(|pos| buf.contains_position(*pos))
+                }
+            }
+
+            fn linewise(&self) -> bool {
+                $linewise
+            }
+        }
+
+        impl $for {
+            pub fn new() -> Self {
+                Self
+            }
+        }
+
+        impl Default for $for {
+            fn default() -> $for {
+                $for::new()
+            }
+        }
+    };
+}
+
+impl_motion!(Left, pos => pos - (0, 1), linewise = false);
+impl_motion!(Right, pos => pos + (0, 1), linewise = false);
+
+impl_motion!(Up, pos => pos - (1, 0), linewise = true);
+impl_motion!(Down, pos => pos + (1, 0), linewise = true);
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum CharClass {

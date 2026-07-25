@@ -8,7 +8,7 @@ use crate::{
     buffer::{self, Buffer},
     ctrl_key,
     location::Location,
-    motion::{self, Back, BigBack, BigWord, Motion, Word},
+    motion::{self, Back, BigBack, BigWord, Down, Left, Motion, Right, Up, Word},
     trie::{Index, Trie},
 };
 
@@ -187,10 +187,6 @@ trait ConfigureKeymap {
                 a.buf.move_cursor(C::Down)
             }
         });
-        self.add_keymap(mode, [I::Char('h')], |a| a.buf.move_cursor(C::Left));
-        self.add_keymap(mode, [I::Char('j')], |a| a.buf.move_cursor(C::Down));
-        self.add_keymap(mode, [I::Char('k')], |a| a.buf.move_cursor(C::Up));
-        self.add_keymap(mode, [I::Char('l')], |a| a.buf.move_cursor(C::Right));
         self.add_keymap(mode, [I::Char('i')], |mut a| a.set_mode(ModeState::Insert));
         self.add_keymap(mode, [I::Char('v')], |mut a| a.set_mode(ModeState::Visual));
         self.add_keymap(mode, [I::Char('g'), I::Char('g')], |a| {
@@ -206,7 +202,7 @@ trait ConfigureKeymap {
         });
         self.add_keymap(mode, [I::Char('o')], |mut a| {
             let line = a.buf.position().line();
-            a.buf.set_lines(line + 1, [""]);
+            a.buf.insert_lines(line + 1, [""]);
             a.buf.set_position(line + 1, 0);
 
             a.set_mode(ModeState::Insert);
@@ -271,7 +267,7 @@ trait ConfigureKeymap {
             let line = a.buf.position().line();
             let reg = a.state.registers.get_register('"');
             if reg.yanked_linewise {
-                a.buf.set_lines(line + 1, reg.value.lines());
+                a.buf.insert_lines(line + 1, reg.value.lines());
                 a.buf.set_position(line + 1, 0);
                 return;
             }
@@ -279,6 +275,10 @@ trait ConfigureKeymap {
             a.buf.set_position(pos.line(), pos.col());
             a.buf.set_range(pos, pos, reg.value.lines());
         });
+        self.configure_simple_motion([I::Char('h')], motion::Left);
+        self.configure_simple_motion([I::Char('j')], motion::Down);
+        self.configure_simple_motion([I::Char('k')], motion::Up);
+        self.configure_simple_motion([I::Char('l')], motion::Right);
         self.configure_simple_motion([I::Char('w')], motion::Word::new());
         self.configure_simple_motion([I::Char('W')], motion::BigWord::new());
         self.configure_simple_motion([I::Char('b')], motion::Back::new());
@@ -292,14 +292,23 @@ trait ConfigureKeymap {
             }
         }
 
-        self.configure_motions(&[I::Char('d')], |a, start, end| {
+        self.configure_motions(&[I::Char('d')], |a, start, end, linewise| {
             let (start, end) = sort_location(start, end);
             debug!("delete {start:?} {end:?}");
+
+            if linewise {
+                let s = join_iter(a.buf.get_lines(start.line()..=end.line()));
+                debug!("{s:?}");
+                a.buf.remove_lines(start.line()..end.line() + 1);
+
+                return;
+            }
+
             let s = join_iter(a.buf.get_range(start, end));
             a.buf.delete_range(start, end);
             a.state.registers.set_register('"', s, false);
         });
-        self.configure_motions(&[I::Char('y')], |a, start, end| {
+        self.configure_motions(&[I::Char('y')], |a, start, end, linewise| {
             let (start, end) = sort_location(start, end);
             let s = join_iter(a.buf.get_range(start, end));
             a.state.registers.set_register('"', s, false);
@@ -352,7 +361,7 @@ trait ConfigureKeymap {
         motion: impl Motion + 'static,
         f: F,
     ) where
-        F: Fn(MapArgs, Location, Location) + 'static,
+        F: Fn(MapArgs, Location, Location, bool) + 'static,
     {
         let mode = Mode::Normal;
         self.add_keymap(mode, prefix.iter().copied().chain(suffix), move |a| {
@@ -360,19 +369,38 @@ trait ConfigureKeymap {
             let Some(end) = motion.next(a.buf) else {
                 return;
             };
-            f(a, start, end)
+            f(a, start, end, motion.linewise())
         });
     }
 
     fn configure_motions<F>(&mut self, prefix: &[Input], f: F)
     where
-        F: Fn(MapArgs, Location, Location) + 'static + Clone,
+        F: Fn(MapArgs, Location, Location, bool) + 'static + Clone,
     {
         use Input as I;
-        self.configure_motion(prefix, [I::Char('w')], Word::new(), f.clone());
-        self.configure_motion(prefix, [I::Char('W')], BigWord::new(), f.clone());
-        self.configure_motion(prefix, [I::Char('b')], Back::new(), f.clone());
-        self.configure_motion(prefix, [I::Char('B')], BigBack::new(), f.clone());
+        macro_rules! conf {
+            (
+               $self:expr, $prefix:expr,
+               [ $($ch:literal),* $(,)? ] => $motion:ident, $f:expr
+            ) => {
+                $self.configure_motion(
+                    $prefix,
+                    [ $(I::Char($ch)),* ],
+                    $motion::new(),
+                    $f.clone()
+                    );
+            };
+        }
+
+        conf!(self, prefix, ['h'] => Left, f);
+        conf!(self, prefix, ['j'] => Down, f);
+        conf!(self, prefix, ['k'] => Up, f);
+        conf!(self, prefix, ['l'] => Right, f);
+
+        conf!(self, prefix, ['w'] => Word, f);
+        conf!(self, prefix, ['W'] => BigWord, f);
+        conf!(self, prefix, ['b'] => Back, f);
+        conf!(self, prefix, ['B'] => BigBack, f);
     }
 
     fn configure_insert_mode(&mut self) {
@@ -1177,5 +1205,28 @@ mod tests {
         assert_eq!(buf.save(), "hllo\n");
         assert_eq!(buf.position(), (0, 1).into());
         assert_eq!(vim.state.registers.get_register('"').value, "e");
+    }
+
+    #[test]
+    #[ignore = "not yet implemented"]
+    fn f() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("hello world");
+        feedkeys(&mut vim, &mut buf, "fl").no_break();
+        assert_eq!(buf.position(), (0, 2).into());
+        feedkeys(&mut vim, &mut buf, "fl").no_break();
+        assert_eq!(buf.position(), (0, 3).into());
+        feedkeys(&mut vim, &mut buf, "fl").no_break();
+        assert_eq!(buf.position(), (0, 9).into());
+        feedkeys(&mut vim, &mut buf, "fl").no_break();
+        assert_eq!(buf.position(), (0, 9).into());
+    }
+
+    #[test]
+    fn dj() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("use anyhow::anyhow;\nuse log::LevelFilter;\nblah");
+        feedkeys(&mut vim, &mut buf, "llldj").no_break();
+        assert_eq!(buf.save(), "blah\n");
     }
 }

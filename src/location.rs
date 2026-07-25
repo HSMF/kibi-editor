@@ -57,6 +57,16 @@ impl std::ops::Add<(usize, usize)> for Location {
     }
 }
 
+impl std::ops::Sub<(usize, usize)> for Location {
+    type Output = Self;
+
+    fn sub(mut self, rhs: (usize, usize)) -> Self::Output {
+        self.line = self.line.saturating_sub(rhs.0);
+        self.col = self.col.saturating_sub(rhs.1);
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,5 +80,11 @@ mod tests {
     fn add() {
         assert_eq!(Location::new(0, 5) + (0, 2), Location::new(0, 7));
         assert_eq!(Location::new(1, 5) + (4, 2), Location::new(5, 7));
+    }
+
+    #[test]
+    fn sub() {
+        assert_eq!(Location::new(0, 5) - (0, 2), Location::new(0, 3));
+        assert_eq!(Location::new(1, 5) - (4, 2), Location::new(0, 3));
     }
 }

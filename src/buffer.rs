@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 
 use tinyvec::{ArrayVec, array_vec};
 
@@ -348,6 +348,14 @@ impl Buffer {
         Location::new(self.cur_line, self.cur_col)
     }
 
+    /// returns true if `pos` is a valid position in the buffer
+    pub fn contains_position(&self, pos: Location) -> bool {
+        let Some(line) = self.get_row(pos.line()) else {
+            return false;
+        };
+        pos.col() == 0 || pos.col() < line.chars().count()
+    }
+
     /// returns (line, col)
     pub fn set_position(&mut self, line: usize, col: usize) {
         self.cur_line = line;
@@ -425,6 +433,15 @@ impl Buffer {
             buf: self,
             start,
             end,
+        }
+    }
+
+    /// behaves like `nvim_buf_get_lines`
+    pub fn get_lines<'a>(&'a self, range: RangeInclusive<usize>) -> RangeLinesIter<'a> {
+        RangeLinesIter {
+            buf: self,
+            start: *range.start(),
+            end: *range.end(),
         }
     }
 
@@ -527,8 +544,13 @@ impl Buffer {
         }
     }
 
+    pub fn remove_lines(&mut self, range: Range<usize>) {
+        self.dirty = true;
+        self.row.drain(range);
+    }
+
     /// insert `lines` before `start`
-    pub fn set_lines<I, S>(&mut self, start: usize, lines: I)
+    pub fn insert_lines<I, S>(&mut self, start: usize, lines: I)
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -585,6 +607,26 @@ impl<'a> Iterator for RangeIter<'a> {
         self.start = Location::new(self.start.line() + 1, 0);
 
         Some(&ret[idx..])
+    }
+}
+
+pub struct RangeLinesIter<'a> {
+    buf: &'a Buffer,
+    start: usize,
+    end: usize,
+}
+
+impl<'a> Iterator for RangeLinesIter<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.start > self.end {
+            return None;
+        }
+
+        let line = self.buf.get_row(self.start)?;
+        self.start += 1;
+        Some(line)
     }
 }
 
@@ -1012,7 +1054,7 @@ mod tests {
                 #[test]
                 fn $name() {
                     let mut buffer = new_buf($buf);
-                    buffer.set_lines($line, $lines);
+                    buffer.insert_lines($line, $lines);
                     assert_eq!(
                         buffer.save(),
                         $expected

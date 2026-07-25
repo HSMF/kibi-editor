@@ -17,7 +17,13 @@
 
 - `expandtab` (sorry Qwendu)
 
+
 ## UI 
 
 - [ ] warn if trying to quit out from a dirty buffer
 - [ ] fix rendering of large lines
+- [ ] multiple windows
+
+## Other
+
+- [ ] multiple buffers

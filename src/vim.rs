@@ -447,6 +447,23 @@ trait ConfigureKeymap {
             a.buf.delete_range(start, end);
             a.state.registers.set_register('"', s, false);
         });
+        self.configure_motions(&[I::Char('c')], |mut a, start, end, linewise| {
+            let (start, end) = sort_location(start, end);
+
+            if linewise {
+                let s = join_iter(a.buf.get_lines(start.line()..=end.line()));
+                a.buf.remove_lines(start.line()..end.line() + 1);
+                a.state.registers.set_register('"', s, true);
+                a.buf.insert_lines(start.line(), std::iter::once(""));
+                a.set_mode(ModeState::Insert);
+                return;
+            }
+
+            let s = join_iter(a.buf.get_range(start, end));
+            a.buf.delete_range(start, end);
+            a.state.registers.set_register('"', s, false);
+            a.set_mode(ModeState::Insert);
+        });
         self.configure_motions(&[I::Char('y')], |a, start, end, linewise| {
             let (start, end) = sort_location(start, end);
             if linewise {

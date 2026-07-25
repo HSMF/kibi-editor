@@ -9,6 +9,7 @@
 - [x] `gg`
 - [x] `r`
 - [x] `x`
+- [x] `c<motion>`
 
 ## options
 

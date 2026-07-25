@@ -9,7 +9,8 @@ use crate::{
     ctrl_key,
     location::Location,
     motion::{
-        self, Back, BigBack, BigWord, Down, EndOfLine, Left, Motion, Right, StartOfLine, Up, Word,
+        self, Back, BigBack, BigWord, Down, EndOfLine, Left, Motion, Right, SeekUntilChar,
+        StartOfLine, Up, Word,
     },
     trie::{Index, Trie},
 };
@@ -266,16 +267,22 @@ trait ConfigureKeymap {
             a.buf.set_position(pos.line(), pos.col());
             a.buf.set_range(pos, pos, reg.value.lines());
         });
-        self.configure_simple_motion([I::Char('h')], motion::Left);
-        self.configure_simple_motion([I::Char('j')], motion::Down);
-        self.configure_simple_motion([I::Char('k')], motion::Up);
-        self.configure_simple_motion([I::Char('l')], motion::Right);
-        self.configure_simple_motion([I::Char('w')], motion::Word::new());
-        self.configure_simple_motion([I::Char('W')], motion::BigWord::new());
-        self.configure_simple_motion([I::Char('b')], motion::Back::new());
-        self.configure_simple_motion([I::Char('B')], motion::BigBack::new());
-        self.configure_simple_motion([I::Char('$')], EndOfLine::new());
-        self.configure_simple_motion([I::Char('0')], StartOfLine::new());
+        self.configure_simple_motion([I::Char('h')], |_| motion::Left);
+        self.configure_simple_motion([I::Char('j')], |_| motion::Down);
+        self.configure_simple_motion([I::Char('k')], |_| motion::Up);
+        self.configure_simple_motion([I::Char('l')], |_| motion::Right);
+        self.configure_simple_motion([I::Char('w')], |_| motion::Word::new());
+        self.configure_simple_motion([I::Char('W')], |_| motion::BigWord::new());
+        self.configure_simple_motion([I::Char('b')], |_| motion::Back::new());
+        self.configure_simple_motion([I::Char('B')], |_| motion::BigBack::new());
+        self.configure_simple_motion([I::Char('$')], |_| EndOfLine::new());
+        self.configure_simple_motion([I::Char('0')], |_| StartOfLine::new());
+        self.configure_simple_motion_op_pending([Index::Index(I::Char('f')), Index::Any], |a| {
+            match a.cur_input.last().expect("have last char") {
+                I::Char(ch) => Some(SeekUntilChar::new(*ch)),
+                _ => None,
+            }
+        });
 
         fn sort_location(start: Location, end: Location) -> (Location, Location) {
             if end < start {
@@ -339,35 +346,63 @@ trait ConfigureKeymap {
         self.configure_arrow_keys(mode);
     }
 
-    fn configure_simple_motion<M>(&mut self, mapping: impl IntoIterator<Item = Input>, motion: M)
-    where
-        M: Motion + 'static,
+    fn configure_simple_motion<M>(
+        &mut self,
+        mapping: impl IntoIterator<Item = Input>,
+        motion: impl Fn(&MapArgs) -> M + 'static,
+    ) where
+        M: Motion,
     {
         let mode = Mode::Normal;
         self.add_keymap(mode, mapping, move |a| {
+            let motion = motion(&a);
             if let Some(next) = motion.next(a.buf) {
                 a.buf.set_position(next.line(), next.col());
             }
         });
     }
 
-    fn configure_motion<F>(
+    fn configure_simple_motion_op_pending<M>(
+        &mut self,
+        mapping: impl IntoIterator<Item = Index<Input>>,
+        motion: impl Fn(&MapArgs) -> M + 'static,
+    ) where
+        M: Motion,
+    {
+        let mode = Mode::Normal;
+        self.add_keymap_op_pending(mode, mapping, move |a| {
+            let motion = motion(&a);
+            if let Some(next) = motion.next(a.buf) {
+                a.buf.set_position(next.line(), next.col());
+            }
+        });
+    }
+
+    fn configure_motion<F, M, MF>(
         &mut self,
         prefix: &[Input],
-        suffix: impl IntoIterator<Item = Input>,
-        motion: impl Motion + 'static,
+        suffix: impl IntoIterator<Item = Index<Input>>,
+        motion: MF,
         f: F,
     ) where
+        M: Motion,
+        MF: Fn(&MapArgs) -> M,
+        MF: 'static,
         F: Fn(MapArgs, Location, Location, bool) + 'static,
     {
         let mode = Mode::Normal;
-        self.add_keymap(mode, prefix.iter().copied().chain(suffix), move |a| {
-            let start = a.buf.position();
-            let Some(end) = motion.next(a.buf) else {
-                return;
-            };
-            f(a, start, end, motion.linewise())
-        });
+        self.add_keymap_op_pending(
+            mode,
+            prefix.iter().copied().map(Index::Index).chain(suffix),
+            move |a| {
+                let motion = motion(&a);
+                let start = a.buf.position();
+                let Some(end) = motion.next(a.buf) else {
+                    return;
+                };
+                f(a, start, end, motion.linewise())
+            },
+        );
     }
 
     fn configure_motions<F>(&mut self, prefix: &[Input], f: F)
@@ -375,19 +410,54 @@ trait ConfigureKeymap {
         F: Fn(MapArgs, Location, Location, bool) + 'static + Clone,
     {
         use Input as I;
+        macro_rules! pattern {
+            () => {
+                std::iter::empty()
+            };
+            ($ch:literal $($tt:tt)*) => {
+                std::iter::once(
+                    Index::Index(I::Char($ch))
+                ).chain(
+                    pattern!($($tt)*)
+                )
+            };
+            (ANY $($tt:tt)*) => {
+                std::iter::once(Index::<I>::Any).chain(
+                    pattern!($($tt)*)
+                )
+            };
+        }
+
         macro_rules! conf {
             (
                $self:expr, $prefix:expr, $f:expr,
-               $([ $($ch:literal),* $(,)? ] => $motion:ident;)*
+            ) => {};
+            (
+               $self:expr, $prefix:expr, $f:expr,
+               [ $($pattern:tt)* ] => $motion:ident;
+               $($tt:tt)*
             ) => {
-                $(
                     $self.configure_motion(
                         $prefix,
-                        [ $(I::Char($ch)),* ],
-                        $motion::new(),
+                        pattern!($($pattern)*),
+                        |_| $motion::new(),
                         $f.clone()
                     );
-                )*
+                    conf!($self, $prefix, $f, $($tt)*);
+            };
+
+            (
+               $self:expr, $prefix:expr, $f:expr,
+               $state:ident, [ $($pattern:tt)* ] => $motion:expr;
+               $($tt:tt)*
+            ) => {
+                    $self.configure_motion(
+                        $prefix,
+                        pattern!($($pattern)*),
+                        |$state| $motion,
+                        $f.clone()
+                    );
+                    conf!($self, $prefix, $f, $($tt)*);
             };
         }
 
@@ -403,6 +473,15 @@ trait ConfigureKeymap {
             ['B'] => BigBack;
             ['$'] => EndOfLine;
             ['0'] => StartOfLine;
+            a, ['f' ANY] => {
+                a.cur_input
+                    .last()
+                    .copied()
+                    .and_then(Input::char)
+                    .map(SeekUntilChar::new)
+                    // FIXME: ugly hack to force behavior of real vim
+                    .map(SeekUntilChar::one_past)
+            };
         }
     }
 
@@ -1211,7 +1290,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "not yet implemented"]
     fn f() {
         let mut vim = Vim::new();
         let (_f, mut buf) = buffer("hello world");

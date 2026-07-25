@@ -49,11 +49,6 @@ macro_rules! impl_new {
     };
 }
 
-pub struct Left;
-pub struct Right;
-pub struct Up;
-pub struct Down;
-
 macro_rules! impl_motion {
     ($for:ident, $pos:ident => $e:expr, linewise = $linewise:literal) => {
         impl Motion for $for {
@@ -75,6 +70,21 @@ macro_rules! impl_motion {
         impl_new!($for);
     };
 }
+
+impl<T: Motion> Motion for Option<T> {
+    fn next(&self, buf: &Buffer) -> Option<Location> {
+        self.as_ref().and_then(|m| m.next(buf))
+    }
+
+    fn linewise(&self) -> bool {
+        self.as_ref().map(Motion::linewise).unwrap_or(false)
+    }
+}
+
+pub struct Left;
+pub struct Right;
+pub struct Up;
+pub struct Down;
 
 impl_motion!(Left, pos => pos - (0, 1), linewise = false);
 impl_motion!(Right, pos => pos + (0, 1), linewise = false);
@@ -310,6 +320,37 @@ motion_with_word_classification! {
     pub struct Back(BackMotion, WordClassify);
     /// `B`
     pub struct BigBack(BackMotion, BigWordClassify);
+}
+
+pub struct SeekUntilChar(char, bool);
+
+impl SeekUntilChar {
+    pub fn new(ch: char) -> Self {
+        Self(ch, false)
+    }
+
+    pub fn one_past(self) -> Self {
+        Self(self.0, true)
+    }
+}
+
+impl Motion for SeekUntilChar {
+    fn next(&self, buf: &Buffer) -> Option<Location> {
+        let pos = buf.position();
+
+        let line = buf.get_row(pos.line())?;
+        let (mut col, _) = line
+            .chars()
+            .enumerate()
+            .skip(pos.col() + 1)
+            .find(|ch| ch.1 == self.0)?;
+
+        if self.1 {
+            col += 1;
+        }
+
+        Some(Location::new(pos.line(), col))
+    }
 }
 
 #[cfg(test)]

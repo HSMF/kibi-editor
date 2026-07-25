@@ -145,6 +145,15 @@ impl Display for Input {
     }
 }
 
+impl Input {
+    pub fn char(self) -> Option<char> {
+        match self {
+            Self::Char(ch) => Some(ch),
+            _ => None,
+        }
+    }
+}
+
 const fn ctrl_key(x: u8) -> Input {
     Input::Control(x & 0x1f)
 }

@@ -497,6 +497,10 @@ trait ConfigureKeymap {
             ['j'] => Down::new();
             ['k'] => Up::new();
             ['l'] => Right::new();
+            [<Left>] => Left::new();
+            [<Down>] => Down::new();
+            [<Up>] => Up::new();
+            [<Right>] => Right::new();
             ['w'] => Word::new();
             ['W'] => BigWord::new();
             ['b'] => Back::new();

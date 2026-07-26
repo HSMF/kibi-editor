@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::dbg_macro))]
+
 use std::{env, fmt::Display, io::Write, ops::ControlFlow, os::fd::AsRawFd};
 
 use anyhow::anyhow;

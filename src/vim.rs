@@ -950,11 +950,17 @@ impl VimState {
     }
 
     fn set_mode(&mut self, mode: ModeState, buf: &mut Buffer) {
+        if self.mode == ModeState::Insert {
+            buf.finish_action();
+        }
         match mode {
             ModeState::Normal | ModeState::Visual | ModeState::Command { .. } => {
                 buf.set_go_past_end(false)
             }
-            ModeState::Insert => buf.set_go_past_end(true),
+            ModeState::Insert => {
+                buf.start_action();
+                buf.set_go_past_end(true)
+            }
         }
         self.mode = mode;
     }
@@ -1236,6 +1242,19 @@ mod tests {
     }
 
     #[test]
+    fn set_filename() {
+        let mut vim = Vim::new();
+        let (f, mut buf) = buffer("helloworld");
+        let path = f.path().parent().unwrap().join("other.txt");
+        let path_str = path.to_str().unwrap();
+
+        feedkeys(&mut vim, &mut buf, ":f ").no_break();
+        feedkeys(&mut vim, &mut buf, path_str).no_break();
+        feedkeys(&mut vim, &mut buf, "\n").no_break();
+        assert_eq!(buf.path(), Some(path_str));
+    }
+
+    #[test]
     fn write_works() {
         let mut vim = Vim::new();
         let (f, mut buf) = buffer("helloworld");
@@ -1449,5 +1468,53 @@ mod tests {
         let (_f, mut buf) = buffer("   ");
         feedkeys(&mut vim, &mut buf, "I").no_break();
         assert_eq!(buf.position(), Location::new(0, 3));
+    }
+
+    macro_rules! vim_tests {
+        ($($name:ident() $vim:ident, $buf:ident = $buffer:literal => $block:block)*) => {
+            $(
+                #[test]
+                fn $name() {
+                    let mut $vim = Vim::new();
+                    let (_f, mut $buf) = buffer($buffer);
+                    $block
+                }
+            )*
+        };
+    }
+
+    vim_tests! {
+        seek_start() vim, buf = "hello\nworld\nfoo\nbar" => {
+            feedkeys(&mut vim, &mut buf, "jjl").no_break();
+            assert_eq!(buf.position(), Location::new(2, 1));
+            feedkeys(&mut vim, &mut buf, "gg").no_break();
+            assert_eq!(buf.position(), Location::new(0, 1));
+        }
+        seek_end() vim, buf = "hello\nworld\nfoo\nbar" => {
+            feedkeys(&mut vim, &mut buf, "G").no_break();
+            assert_eq!(buf.position(), Location::new(3, 0));
+        }
+        swap_lines() vim, buf = "hello\nworld" => {
+            feedkeys(&mut vim, &mut buf, "lddp").no_break();
+            assert_eq!(buf.save(), "world\nhello\n");
+        }
+        undo() vim, buf = "hello\nworld" => {
+            feedkeys(&mut vim, &mut buf, "x").no_break();
+            assert_eq!(buf.save(), "ello\nworld\n");
+            feedkeys(&mut vim, &mut buf, "u").no_break();
+            assert_eq!(buf.save(), "hello\nworld\n");
+            vim.handle_input(&mut buf, ctrl_key(b'r')).no_break();
+            assert_eq!(buf.save(), "ello\nworld\n");
+        }
+        cw() vim, buf = "foo bar baz\n1 2 3" => {
+            feedkeys(&mut vim, &mut buf, "cw").no_break();
+            assert_eq!(buf.save(), "bar baz\n1 2 3\n");
+            assert_eq!(vim.mode(), Mode::Insert);
+        }
+        cj() vim, buf = "1\n2\n3\n4" => {
+            feedkeys(&mut vim, &mut buf, "cj").no_break();
+            assert_eq!(buf.save(), "\n3\n4\n");
+            assert_eq!(vim.mode(), Mode::Insert);
+        }
     }
 }

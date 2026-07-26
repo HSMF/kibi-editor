@@ -5,6 +5,8 @@ use std::{
 
 use tinyvec::{ArrayVec, array_vec};
 
+const UNDOLEVEL: usize = 1000;
+
 use crate::{CursorDirection, location::Location};
 
 #[derive(PartialEq, Eq, Debug)]
@@ -40,6 +42,8 @@ enum Action {
         start: usize,
         count: usize,
     },
+    /// group of actions that make up just one action on the stack
+    Group(Vec<Action>),
 }
 
 #[derive(Debug, PartialEq, Eq, Default)]
@@ -151,6 +155,9 @@ pub struct Buffer {
 
     actions: VecDeque<Action>,
     redo_actions: Vec<Action>,
+
+    in_cur_group: bool,
+    cur_group: Vec<Action>,
 }
 
 pub(crate) fn get_byte_range_from_char_range(s: &str, start: usize, end: usize) -> Range<usize> {
@@ -195,6 +202,9 @@ impl Buffer {
             allow_one_past: false,
             actions: VecDeque::new(),
             redo_actions: Vec::new(),
+
+            in_cur_group: false,
+            cur_group: Vec::new(),
         }
     }
 
@@ -212,6 +222,9 @@ impl Buffer {
             allow_one_past: false,
             actions: VecDeque::new(),
             redo_actions: Vec::new(),
+
+            in_cur_group: false,
+            cur_group: Vec::new(),
         }
     }
 
@@ -519,12 +532,12 @@ impl Buffer {
         S: Into<String>,
     {
         let (replaced, end) = self.do_set_range_(start, end, replacement);
-        dbg!(self.save());
-        dbg!(Action::SetRange {
+        self.save();
+        Action::SetRange {
             start,
             end,
             replaced,
-        })
+        }
     }
 
     /// lines inclusive, columns exclusive
@@ -661,6 +674,33 @@ impl Buffer {
         let count = after - before;
         Action::InsertLines { start, count }
     }
+
+    fn push_action(&mut self, act: Action) {
+        self.redo_actions.clear();
+        if self.in_cur_group {
+            self.cur_group.push(act);
+            return;
+        }
+        if self.actions.len() == UNDOLEVEL {
+            self.actions.pop_front();
+        }
+        self.actions.push_back(act);
+    }
+
+    /// starts a group of actions that are treated atomically
+    pub fn start_action(&mut self) {
+        assert!(!self.in_cur_group, "todo: handle nested groups");
+        self.in_cur_group = true;
+    }
+
+    /// finishes a group of actions that are treated atomically
+    pub fn finish_action(&mut self) {
+        self.in_cur_group = false;
+        if !self.cur_group.is_empty() {
+            let group = std::mem::take(&mut self.cur_group);
+            self.push_action(Action::Group(group));
+        }
+    }
 }
 
 // buffer mutating operations
@@ -668,28 +708,25 @@ impl Buffer {
     pub fn remove_line(&mut self, line: usize) -> String {
         let line_num = line;
         let line = self.do_remove_line(line_num);
-        self.actions.push_back(Action::RemoveLine {
+        self.push_action(Action::RemoveLine {
             line_num,
             line: line.clone(),
         });
-        self.redo_actions.clear();
         line
     }
 
     pub fn insert_char(&mut self, ch: char) {
-        self.actions.push_back(Action::InsertChar {
+        self.push_action(Action::InsertChar {
             inserted: ch,
             at: self.position(),
         });
-        self.redo_actions.clear();
         self.do_insert_char(ch)
     }
 
     pub fn add_newline(&mut self) {
-        self.actions.push_back(Action::AddNewline {
+        self.push_action(Action::AddNewline {
             at: self.position(),
         });
-        self.redo_actions.clear();
         self.do_add_newline()
     }
 
@@ -700,9 +737,7 @@ impl Buffer {
             return;
         }
         let range = self.do_delete_range(start, end);
-        self.actions
-            .push_back(Action::DeleteRange { start, end, range });
-        self.redo_actions.clear();
+        self.push_action(Action::DeleteRange { start, end, range });
     }
 
     /// lines inclusive, columns exclusive
@@ -712,14 +747,12 @@ impl Buffer {
         S: Into<String>,
     {
         let action = self.do_set_range(start, end, replacement);
-        self.actions.push_back(action);
-        self.redo_actions.clear();
+        self.push_action(action);
     }
 
     pub fn remove_lines(&mut self, range: Range<usize>) {
         let action = self.do_remove_lines(range.clone());
-        self.actions.push_back(action);
-        self.redo_actions.clear();
+        self.push_action(action);
     }
 
     /// insert `lines` before `start`
@@ -729,8 +762,7 @@ impl Buffer {
         S: Into<String>,
     {
         let action = self.do_insert_lines(start, lines);
-        self.actions.push_back(action);
-        self.redo_actions.clear();
+        self.push_action(action);
     }
 
     fn do_undo(&mut self, action: Action) -> Action {
@@ -772,6 +804,13 @@ impl Buffer {
                 replaced,
             } => self.do_set_range(start, end, replaced),
             Action::InsertLines { start, count } => self.do_remove_lines(start..start + count),
+            Action::Group(actions) => {
+                let mut ret = Vec::with_capacity(actions.len());
+                for x in actions.into_iter().rev() {
+                    ret.push(self.do_undo(x));
+                }
+                Action::Group(ret)
+            }
         }
     }
 
@@ -887,7 +926,10 @@ mod tests {
                 cur_col: 0,
                 allow_one_past: false,
                 actions: VecDeque::new(),
-                redo_actions: Vec::new()
+                redo_actions: Vec::new(),
+
+                in_cur_group: false,
+                cur_group: Vec::new(),
             }
         );
     }
@@ -1391,6 +1433,16 @@ mod tests {
         }
         undo_insert_lines3() buffer = "hello\nworld" => {
             buffer.insert_lines(1, ["a", "b"]);
+        }
+        undo_group() buffer = "hello" => {
+            buffer.start_action();
+            buffer.insert_char('a');
+            buffer.insert_char('b');
+            buffer.insert_char('c');
+            dbg!(&buffer.cur_group);
+            buffer.finish_action();
+            dbg!(&buffer.cur_group);
+            dbg!(&buffer.actions);
         }
 
     }

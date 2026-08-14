@@ -160,6 +160,20 @@ const fn ctrl_key(x: u8) -> Input {
     Input::Control(x & 0x1f)
 }
 
+struct AlternateScreen;
+impl AlternateScreen {
+    pub fn new() -> Self {
+        print!("\x1b[?1049h");
+        Self
+    }
+}
+
+impl Drop for AlternateScreen {
+    fn drop(&mut self) {
+        print!("\x1b[?1049l");
+    }
+}
+
 fn enter_raw_mode() -> Termios {
     let fd = std::io::stdin().as_raw_fd();
     let mut termios = Termios::from_fd(fd).unwrap();
@@ -297,6 +311,7 @@ fn main() -> anyhow::Result<()> {
     log4rs::init_config(config)?;
 
     let orig_termios = enter_raw_mode();
+    let _alternate_screen = AlternateScreen::new();
     let mut conf = EditorConfig::init()?;
 
     conf.set_message(format!(

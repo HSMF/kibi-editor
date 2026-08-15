@@ -703,6 +703,10 @@ impl Vim {
         }
     }
 
+    pub fn execute_cmd(&mut self, cmd: &str) {
+        self.state.execute_cmd(&mut self.buf, &mut self.win, cmd);
+    }
+
     fn handle_key<'a>(
         key: impl IntoIterator<Item = &'a Input> + 'a,
         keymaps: &'a Keymaps,

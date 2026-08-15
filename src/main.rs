@@ -23,6 +23,7 @@ mod buffer;
 mod get_input;
 pub mod location;
 pub mod motion;
+mod options;
 pub mod trie;
 mod vim;
 mod window;
@@ -264,7 +265,9 @@ fn draw_rows(conf: &mut EditorConfig) {
 }
 
 fn main() -> anyhow::Result<()> {
-    if env::args().nth(1).as_deref() == Some("--print-supported-keymaps") {
+    let options = options::Options::parse(env::args());
+
+    if options.print_supported_keymaps {
         let r = vim::VimKeymapReport::new();
         println!("{}", r.0);
         return Ok(());
@@ -295,9 +298,13 @@ fn main() -> anyhow::Result<()> {
         env!("CARGO_PKG_VERSION")
     ));
 
-    if let Some(file) = std::env::args().nth(1) {
+    if let Some(file) = options.file {
         let c = std::fs::read_to_string(&file).unwrap_or_default();
         conf.v.set_buffer(Buffer::read(file, &c));
+    }
+
+    for command in options.commands {
+        conf.v.execute_cmd(&command);
     }
 
     loop {

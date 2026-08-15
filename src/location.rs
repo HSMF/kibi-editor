@@ -23,6 +23,7 @@ impl Location {
         self.col
     }
 
+    /// (line, col)
     pub fn destruct(&self) -> (usize, usize) {
         (self.line, self.col)
     }

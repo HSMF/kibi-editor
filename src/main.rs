@@ -16,6 +16,7 @@ use crate::{
     buffer::Buffer,
     get_input::{GetChar, StdinSource},
     vim::Vim,
+    window::Window,
 };
 
 mod buffer;
@@ -24,6 +25,7 @@ pub mod location;
 pub mod motion;
 pub mod trie;
 mod vim;
+mod window;
 
 struct StatusMessage {
     inner: Option<String>,
@@ -61,6 +63,7 @@ pub struct EditorConfig {
     out_buf: Vec<u8>,
     buf: Buffer,
     v: Vim,
+    win: Window,
     getchar: GetChar<StdinSource>,
     status_message: StatusMessage,
 }
@@ -70,6 +73,7 @@ impl EditorConfig {
         let (cols, rows) = get_terminal_size().ok_or(anyhow!("no terminal size"))?;
         Ok(Self {
             rows: rows - 2,
+            win: Window::new(cols as usize, rows as usize - 2),
             cols,
             status_message: StatusMessage::new(),
             out_buf: Vec::new(),
@@ -209,7 +213,7 @@ fn refresh_screen(conf: &mut EditorConfig) {
             .extend_from_slice(action.encode_utf8(&mut buf).as_bytes());
         conf.out_buf.extend_from_slice(commandline.as_bytes());
     } else {
-        let (cy, cx) = conf.buf.cursor(conf.rows, conf.cols);
+        let (cy, cx) = conf.win.cursor().destruct();
         write!(conf, "\x1b[{};{}H", cy + 1, cx + 1).unwrap();
     }
 
@@ -259,32 +263,10 @@ fn draw_status_bar(conf: &mut EditorConfig) {
 }
 
 fn draw_rows(conf: &mut EditorConfig) {
-    let rows = conf.rows;
-    let cols = conf.cols;
-    for y in 0..rows {
-        if let Some(row) = conf.buf.get_row_render(y as usize, cols as usize) {
-            conf.out_buf.extend_from_slice(row.as_bytes());
-        } else if conf.buf.is_empty() && y == rows / 3 {
-            let mut pad = cols / 2;
-            if pad > 0 {
-                conf.append("~");
-                pad -= 1;
-            }
-            for _ in 0..pad {
-                conf.append(" ");
-            }
-            write!(
-                conf,
-                "{} -- version {}",
-                env!("CARGO_PKG_NAME"),
-                env!("CARGO_PKG_VERSION")
-            )
-            .unwrap();
-        } else {
-            conf.append("~");
-        }
-        conf.append("\x1b[K");
-        conf.append("\r\n");
+    conf.win.follow_cursor(&conf.buf);
+    for row in conf.win.rows(&conf.buf) {
+        conf.out_buf.extend_from_slice(row.as_bytes());
+        conf.out_buf.extend_from_slice(b"\x1b[K\r\n");
     }
 }
 

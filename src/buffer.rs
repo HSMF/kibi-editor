@@ -278,6 +278,13 @@ impl Buffer {
         })
     }
 
+    // TODO: get rid of `get_row_render` in favor of this
+    pub fn get_row_render_full(&self, row: usize) -> Option<&str> {
+        self.row
+            .get(self.row_off + row)
+            .map(|row| row.render.as_str())
+    }
+
     pub fn do_remove_line(&mut self, line: usize) -> String {
         self.row.remove(line).content
     }

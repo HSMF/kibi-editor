@@ -273,20 +273,28 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let logfile = FileAppender::builder()
-        .encoder(Box::new(PatternEncoder::new(
-            "[{level}] {file}:{line} {message}\n",
-        )))
-        .build("log/output.log")?;
+    if options.version {
+        println!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
-    let config = log4rs::Config::builder()
-        .appender(Appender::builder().build("logfile", Box::new(logfile)))
-        .build(
-            Root::builder()
-                .appender("logfile")
-                .build(LevelFilter::Debug),
-        )?;
-    log4rs::init_config(config)?;
+        return Ok(());
+    }
+
+    if options.debug {
+        let logfile = FileAppender::builder()
+            .encoder(Box::new(PatternEncoder::new(
+                "[{level}] {file}:{line} {message}\n",
+            )))
+            .build("log/output.log")?;
+
+        let config = log4rs::Config::builder()
+            .appender(Appender::builder().build("logfile", Box::new(logfile)))
+            .build(
+                Root::builder()
+                    .appender("logfile")
+                    .build(LevelFilter::Debug),
+            )?;
+        log4rs::init_config(config)?;
+    }
 
     let orig_termios = enter_raw_mode();
     let _alternate_screen = AlternateScreen::new();

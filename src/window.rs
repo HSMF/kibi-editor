@@ -176,17 +176,23 @@ impl<'a> Iterator for Rows<'a> {
         let ret = self
             .buf
             .get_row_render_full(self.win.row_offset + self.y)
-            .map(|row| &row[get_byte_range_from_char_range(row, start, end)])
-            .unwrap_or(EMPTY_LINE);
+            .map(|row| &row[get_byte_range_from_char_range(row, start, end)]);
         self.y += 1;
-        Some(Row {
-            row: ret,
-            num: self
-                .win
-                .options
-                .number
-                .then_some(self.win.row_offset + self.y),
-        })
+        if let Some(ret) = ret {
+            Some(Row {
+                row: ret,
+                num: self
+                    .win
+                    .options
+                    .number
+                    .then_some(self.win.row_offset + self.y),
+            })
+        } else {
+            Some(Row {
+                row: EMPTY_LINE,
+                num: None,
+            })
+        }
     }
 }
 

@@ -181,7 +181,11 @@ impl<'a> Iterator for Rows<'a> {
         self.y += 1;
         Some(Row {
             row: ret,
-            num: Some(self.win.row_offset + self.y).filter(|_| self.win.options.number),
+            num: self
+                .win
+                .options
+                .number
+                .then_some(self.win.row_offset + self.y),
         })
     }
 }

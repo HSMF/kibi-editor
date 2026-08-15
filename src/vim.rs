@@ -705,6 +705,7 @@ impl Vim {
 
     pub fn execute_cmd(&mut self, cmd: &str) {
         self.state.execute_cmd(&mut self.buf, &mut self.win, cmd);
+        self.win.follow_cursor(&self.buf);
     }
 
     fn handle_key<'a>(

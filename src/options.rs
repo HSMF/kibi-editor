@@ -17,7 +17,9 @@ impl Options {
         };
 
         while let Some(arg) = args.next() {
-            if let Some(long_cmd) = arg.strip_prefix("--") {
+            if arg == "--" {
+                break;
+            } else if let Some(long_cmd) = arg.strip_prefix("--") {
                 match long_cmd {
                     "print-supported-keymaps" => ret.print_supported_keymaps = true,
                     _ => panic!("unknown option --{long_cmd:?}"),
@@ -33,6 +35,11 @@ impl Options {
                 ret.file = Some(arg)
             }
         }
+
+        for arg in args {
+            ret.file = Some(arg)
+        }
+
         ret
     }
 }
@@ -92,6 +99,19 @@ mod tests {
                 file: Some("hello".to_owned()),
                 print_supported_keymaps: false,
                 commands: vec!["set number".to_owned()]
+            }
+        );
+    }
+
+    #[test]
+    fn literal_file() {
+        let opts = parse(["--", "-c"]);
+        assert_eq!(
+            opts,
+            Options {
+                file: Some("-c".to_owned()),
+                print_supported_keymaps: false,
+                commands: vec![]
             }
         );
     }

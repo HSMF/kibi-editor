@@ -901,6 +901,12 @@ impl VimState {
                 write(buf);
             }
             "qa" | "qa!" | "q" | "q!" => quit(self),
+            s if let Some(search) = s.strip_prefix("/") => {
+                self.execute_search(buf, search);
+            }
+            s if let Some(cmd) = s.strip_prefix(":") => {
+                self.execute_cmd(buf, win, cmd);
+            }
             s if let Some(filename) = s.strip_prefix("f ") => {
                 buf.set_path(filename.to_owned());
                 buf.set_name(filename.to_owned());

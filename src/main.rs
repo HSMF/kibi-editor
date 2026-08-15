@@ -258,7 +258,7 @@ fn draw_status_bar(conf: &mut EditorConfig) {
 
 fn draw_rows(conf: &mut EditorConfig) {
     for row in conf.v.win().rows(conf.v.current_buffer()) {
-        conf.out_buf.extend_from_slice(row.as_bytes());
+        let _ = write!(&mut conf.out_buf, "{row}");
         conf.out_buf.extend_from_slice(b"\x1b[K\r\n");
     }
 }

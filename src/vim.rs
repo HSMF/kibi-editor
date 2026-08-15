@@ -621,7 +621,7 @@ trait ConfigureKeymap {
 
         self.add_keymap(mode, [I::Escape], |mut a| a.set_mode(ModeState::Normal));
         self.add_keymap(mode, [I::Enter], |a| {
-            a.state.execute_cmd_mode_command(a.buf)
+            a.state.execute_cmd_mode_command(a.buf, a.win)
         });
         self.add_keymap(mode, [I::Backspace], |mut a| {
             let s = a.state.mode.expect_command();
@@ -873,7 +873,7 @@ impl VimState {
         }
     }
 
-    fn execute_cmd(&mut self, buf: &mut Buffer, cmdline: &str) {
+    fn execute_cmd(&mut self, buf: &mut Buffer, win: &mut Window, cmdline: &str) {
         fn write(buf: &mut Buffer) {
             let Some(path) = buf.path() else {
                 return;
@@ -905,9 +905,15 @@ impl VimState {
                 let res = Command::new(shell).arg("-c").arg(command).output();
                 debug!("!{command} => {res:?}");
             }
+            s if let Some(option) = s.strip_prefix("set ") => match option {
+                "number" | "nu" => {
+                    win.options.number = true;
+                }
+                _ => warn!("unknown option: {option:?}"),
+            },
             // :<num> => seek to line
             s if let Ok(line) = s.parse::<usize>() => {
-                buf_seek_line(buf, line);
+                buf_seek_line(buf, line.saturating_sub(1));
             }
             _ => debug!("TODO: notify that this command ({cmdline}) is unknown"),
         }
@@ -990,11 +996,11 @@ impl VimState {
         }
     }
 
-    fn execute_cmd_mode_command(&mut self, buf: &mut Buffer) {
+    fn execute_cmd_mode_command(&mut self, buf: &mut Buffer, win: &mut Window) {
         let mut mode = std::mem::take(&mut self.mode);
         let (action, cmdline) = mode.expect_command();
         match action {
-            CommandAction::Command => self.execute_cmd(buf, cmdline),
+            CommandAction::Command => self.execute_cmd(buf, win, cmdline),
             CommandAction::Search => {
                 self.registers.set_register('/', cmdline.to_string(), false);
                 self.execute_search(buf, cmdline);

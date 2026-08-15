@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use crate::{
     CursorDirection,
     buffer::{Buffer, get_byte_range_from_char_range},
@@ -6,7 +8,18 @@ use crate::{
 
 const EMPTY_LINE: &str = if cfg!(test) { "~" } else { "\x1b[30m~\x1b[0m" };
 
+pub struct WindowOptions {
+    pub number: bool,
+}
+
+impl WindowOptions {
+    const fn new() -> Self {
+        Self { number: false }
+    }
+}
+
 pub struct Window {
+    pub options: WindowOptions,
     row_offset: usize,
     col_offset: usize,
 
@@ -23,6 +36,7 @@ pub struct Window {
 impl Window {
     pub const fn new(width: usize, height: usize) -> Self {
         Self {
+            options: WindowOptions::new(),
             row_offset: 0,
             col_offset: 0,
             prev_cursor: Location::new(0, 0),
@@ -33,7 +47,11 @@ impl Window {
     }
 
     pub fn cursor(&self) -> Location {
-        self.cursor
+        if self.options.number {
+            self.cursor + (0, 4)
+        } else {
+            self.cursor
+        }
     }
 
     pub fn height(&self) -> usize {
@@ -107,7 +125,7 @@ impl Window {
         moved
     }
 
-    pub fn rows<'a>(&'a self, buf: &'a Buffer) -> impl IntoIterator<Item = &'a str> {
+    pub fn rows<'a>(&'a self, buf: &'a Buffer) -> impl IntoIterator<Item = Row<'a>> {
         // let (cx, cy) = self.fit_pos(buf);
         // self.cursor = Location::new(cy, cx);
         Rows {
@@ -124,24 +142,47 @@ pub struct Rows<'a> {
     y: usize,
 }
 
+pub struct Row<'a> {
+    row: &'a str,
+    num: Option<usize>,
+}
+
+impl Display for Row<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(num) = self.num {
+            // hack cos only 3 columns for numbers
+            let num = num % 1000;
+            write!(f, "\x1b[30m{num:>3}\x1b[0m ")?;
+        }
+
+        write!(f, "{}", self.row)?;
+
+        Ok(())
+    }
+}
+
 impl<'a> Iterator for Rows<'a> {
-    type Item = &'a str;
+    type Item = Row<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.y >= self.win.height {
             return None;
         }
+        let start = self.win.col_offset;
+        let mut end = self.win.col_offset + self.win.width;
+        if self.win.options.number {
+            end -= 4;
+        }
         let ret = self
             .buf
             .get_row_render_full(self.win.row_offset + self.y)
-            .map(|row| {
-                let start = self.win.col_offset;
-                let end = self.win.col_offset + self.win.width;
-                &row[get_byte_range_from_char_range(row, start, end)]
-            })
+            .map(|row| &row[get_byte_range_from_char_range(row, start, end)])
             .unwrap_or(EMPTY_LINE);
         self.y += 1;
-        Some(ret)
+        Some(Row {
+            row: ret,
+            num: Some(self.win.row_offset + self.y).filter(|_| self.win.options.number),
+        })
     }
 }
 
@@ -182,6 +223,7 @@ mod tests {
         println!("+{}+", "-".repeat(win.width));
         let c = win.cursor();
         for (i, row) in win.rows(buf).into_iter().enumerate() {
+            let row = row.to_string();
             print!("|");
             if i == c.line() {
                 let before: String = row.chars().take(c.col()).collect();
@@ -206,7 +248,11 @@ mod tests {
         win.follow_cursor(buf);
         let expected = expected.into_iter().collect::<Vec<_>>();
         let height = win.height;
-        let got = win.rows(buf).into_iter().collect::<Vec<_>>();
+        let got = win
+            .rows(buf)
+            .into_iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>();
 
         draw_win(win, buf);
         assert_eq!(got, expected);

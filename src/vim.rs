@@ -13,6 +13,7 @@ use crate::{
         Up, Word,
     },
     trie::{Index, Trie},
+    window::Window,
 };
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
@@ -121,6 +122,8 @@ type CurInput = TinyVec<[Input; 4]>;
 
 pub struct Vim {
     state: VimState,
+    buf: Buffer,
+    win: Window,
     cur_input: CurInput,
     normal_keymaps: Keymaps,
     insert_keymaps: Keymaps,
@@ -129,15 +132,22 @@ pub struct Vim {
 }
 
 pub struct MapArgs<'a> {
-    buf: &'a mut Buffer,
     state: &'a mut VimState,
+    buf: &'a mut Buffer,
+    win: &'a mut Window,
     cur_input: &'a CurInput,
 }
 impl<'a> MapArgs<'a> {
-    fn new(buf: &'a mut Buffer, state: &'a mut VimState, cur_input: &'a CurInput) -> Self {
+    fn new(
+        buf: &'a mut Buffer,
+        state: &'a mut VimState,
+        win: &'a mut Window,
+        cur_input: &'a CurInput,
+    ) -> Self {
         Self {
             buf,
             state,
+            win,
             cur_input,
         }
     }
@@ -298,12 +308,14 @@ trait ConfigureKeymap {
             MapArgs, pat, act => self.add_keymap_op_pending(Mode::Normal, pat, act),
             mut a, [ESC] => a.set_mode(ModeState::Normal);
             a, [CTRL(b'u')] => {
-                for _ in 0..12 {
+                let mid = a.win.height() / 2;
+                for _ in 0..mid {
                     a.buf.move_cursor(C::Up)
                 }
             };
             a, [CTRL(b'd')] => {
-                for _ in 0..12 {
+                let mid = a.win.height() / 2;
+                for _ in 0..mid {
                     a.buf.move_cursor(C::Down)
                 }
             };
@@ -444,6 +456,29 @@ trait ConfigureKeymap {
                     cmdline: String::new(),
                     action: CommandAction::SearchPrevious,
                 })
+            };
+
+            a, [CTRL(b'y')] => {
+                a.win.move_window(CursorDirection::Up);
+            };
+            a, [CTRL(b'e')] => {
+                a.win.move_window(CursorDirection::Down);
+            };
+            a, ['z' 'z'] => {
+                let line = a.win.cursor().line();
+                let mid = a.win.height() / 2;
+                debug!("{line} {mid}");
+                let (amt, dir) = match line.cmp(&mid) {
+                    std::cmp::Ordering::Less => {
+                        (mid - line, CursorDirection::Up)
+                    },
+                    std::cmp::Ordering::Greater => (line - mid, CursorDirection::Down),
+                    std::cmp::Ordering::Equal => return,
+                };
+                debug!("line={line} mid={mid} amt={amt} {dir:?}");
+                for _ in 0..amt {
+                    a.win.move_window(dir);
+                }
             };
         }
 
@@ -625,10 +660,12 @@ trait ConfigureKeymap {
 }
 
 impl Vim {
-    pub fn bare() -> Self {
+    pub fn bare(window: Window) -> Self {
         Self {
             state: VimState::new(),
             cur_input: tiny_vec!(),
+            buf: Buffer::new(),
+            win: window,
             normal_keymaps: Keymaps::new(),
             insert_keymaps: Keymaps::new(),
             visual_keymaps: Keymaps::new(),
@@ -636,10 +673,27 @@ impl Vim {
         }
     }
 
-    pub fn new() -> Self {
-        let mut ret = Self::bare();
+    pub fn new(window: Window) -> Self {
+        let mut ret = Self::bare(window);
         ret.configure();
         ret
+    }
+
+    pub fn set_buffer(&mut self, buf: Buffer) {
+        self.buf = buf;
+    }
+
+    pub fn current_buffer(&self) -> &Buffer {
+        &self.buf
+    }
+
+    #[cfg(test)]
+    pub fn current_buffer_mut(&mut self) -> &mut Buffer {
+        &mut self.buf
+    }
+
+    pub fn win(&self) -> &Window {
+        &self.win
     }
 
     pub fn command_str(&self) -> Option<(char, &str)> {
@@ -660,14 +714,14 @@ impl Vim {
         }
     }
 
-    pub fn fallback_insert(&mut self, buf: &mut Buffer, ch: Input) {
+    pub fn fallback_insert(&mut self, ch: Input) {
         match ch {
-            Input::Char(ch) => buf.insert_char(ch),
+            Input::Char(ch) => self.buf.insert_char(ch),
             _ => warn!("unhandled char {ch:?}"),
         }
     }
 
-    pub fn handle_input(&mut self, buf: &mut Buffer, ch: Input) -> ControlFlow<()> {
+    pub fn handle_input(&mut self, ch: Input) -> ControlFlow<()> {
         macro_rules! handle_mode {
             ($self:expr, $keymaps:ident) => {
                 handle_mode!($self, $keymaps, fallback = {})
@@ -676,12 +730,19 @@ impl Vim {
                 $self.cur_input.push(ch);
                 match Self::handle_key($self.cur_input.iter(), &$self.$keymaps) {
                     LookupKeymap::Match(fun) => {
-                        fun(MapArgs::new(buf, &mut self.state, &$self.cur_input));
+                        fun(MapArgs::new(
+                            &mut self.buf,
+                            &mut self.state,
+                            &mut self.win,
+                            &$self.cur_input,
+                        ));
                         $self.cur_input.clear();
+                        $self.win.follow_cursor(&$self.buf);
                     }
                     LookupKeymap::Continue(..) => {}
                     LookupKeymap::NoMatch => {
                         $fallback;
+                        $self.win.follow_cursor(&$self.buf);
                         $self.cur_input.clear();
                     }
                 }
@@ -694,11 +755,7 @@ impl Vim {
                 fallback = { debug!("unknown input {:?}", self.cur_input) }
             ),
             ModeState::Insert => {
-                handle_mode!(
-                    self,
-                    insert_keymaps,
-                    fallback = self.fallback_insert(buf, ch)
-                )
+                handle_mode!(self, insert_keymaps, fallback = self.fallback_insert(ch))
             }
             ModeState::Command { cmdline, .. } => handle_mode!(
                 self,
@@ -1009,6 +1066,7 @@ fn join_iter<'a>(it: impl Iterator<Item = &'a str>) -> String {
 #[cfg(test)]
 mod tests {
     use std::{cell::Cell, rc::Rc};
+    const WIN: Window = Window::new(80, 24);
 
     use crate::location::Location;
 
@@ -1016,8 +1074,7 @@ mod tests {
 
     #[test]
     fn handle_key() {
-        let mut v = Vim::bare();
-        let mut buf = Buffer::new();
+        let mut v = Vim::bare(WIN);
         let x = Rc::new(Cell::new(0));
         let y = Rc::clone(&x);
         v.add_keymap(
@@ -1028,18 +1085,17 @@ mod tests {
 
         assert_eq!(y.get(), 0);
 
-        let _ = v.handle_input(&mut buf, Input::Char('a'));
+        let _ = v.handle_input(Input::Char('a'));
         assert_eq!(y.get(), 0);
 
-        let _ = v.handle_input(&mut buf, Input::Char('b'));
+        let _ = v.handle_input(Input::Char('b'));
 
         assert_eq!(y.get(), 1);
     }
 
     #[test]
     fn handle_key_unknown_sequence() {
-        let mut v = Vim::bare();
-        let mut buf = Buffer::new();
+        let mut v = Vim::bare(WIN);
         let x = Rc::new(Cell::new(0));
         let y = Rc::clone(&x);
         let z = Rc::clone(&x);
@@ -1052,13 +1108,13 @@ mod tests {
 
         assert_eq!(x.get(), 0);
 
-        let _ = v.handle_input(&mut buf, Input::Char('a'));
+        let _ = v.handle_input(Input::Char('a'));
         assert_eq!(x.get(), 0);
 
-        let _ = v.handle_input(&mut buf, Input::Char('c'));
+        let _ = v.handle_input(Input::Char('c'));
         assert_eq!(x.get(), 0);
 
-        let _ = v.handle_input(&mut buf, Input::Char('c'));
+        let _ = v.handle_input(Input::Char('c'));
 
         assert_eq!(x.get(), 2);
     }
@@ -1083,13 +1139,15 @@ mod tests {
         }
     }
 
-    fn buffer(s: &str) -> (tempfile::NamedTempFile, Buffer) {
+    fn buffer(s: &str) -> (tempfile::NamedTempFile, Vim) {
         let file = tempfile::NamedTempFile::new().unwrap();
         let buf = Buffer::read(file.path().to_str().unwrap().to_owned(), s);
-        (file, buf)
+        let mut vim = Vim::new(WIN);
+        vim.set_buffer(buf);
+        (file, vim)
     }
 
-    fn feedkeys(vim: &mut Vim, buf: &mut Buffer, keys: &str) -> ControlFlow<()> {
+    fn feedkeys(vim: &mut Vim, keys: &str) -> ControlFlow<()> {
         for ch in keys.chars() {
             let ch = match ch {
                 '\n' => Input::Enter,
@@ -1099,347 +1157,317 @@ mod tests {
                     Input::Char(ch)
                 }
             };
-            vim.handle_input(buf, ch)?;
+            vim.handle_input(ch)?;
         }
         ControlFlow::Continue(())
     }
 
     #[test]
     fn insert_works() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello world");
-        vim.handle_input(&mut buf, Input::Char('l')).no_break();
-        assert_eq!(buf.position(), (0, 1).into());
-        vim.handle_input(&mut buf, Input::Char('i')).no_break();
+        let (_f, mut vim) = buffer("hello world");
+        vim.handle_input(Input::Char('l')).no_break();
+        assert_eq!(vim.current_buffer().position(), (0, 1).into());
+        vim.handle_input(Input::Char('i')).no_break();
         assert_eq!(vim.mode(), Mode::Insert);
-        vim.handle_input(&mut buf, Input::Char(' ')).no_break();
+        vim.handle_input(Input::Char(' ')).no_break();
         assert_eq!(vim.mode(), Mode::Insert);
-        assert_eq!(buf.save(), "h ello world\n");
+        assert_eq!(vim.current_buffer().save(), "h ello world\n");
     }
 
     #[test]
     fn insert_backspace() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("this");
-        feedkeys(&mut vim, &mut buf, "lli").no_break();
-        vim.handle_input(&mut buf, Input::Backspace).no_break();
-        assert_eq!(buf.save(), "tis\n");
+        let (_f, mut vim) = buffer("this");
+        feedkeys(&mut vim, "lli").no_break();
+        vim.handle_input(Input::Backspace).no_break();
+        assert_eq!(vim.current_buffer().save(), "tis\n");
 
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("foo\nbar");
-        feedkeys(&mut vim, &mut buf, "ji").no_break();
-        vim.handle_input(&mut buf, Input::Backspace).no_break();
-        assert_eq!(buf.save(), "foobar\n");
+        let (_f, mut vim) = buffer("foo\nbar");
+        feedkeys(&mut vim, "ji").no_break();
+        vim.handle_input(Input::Backspace).no_break();
+        assert_eq!(vim.current_buffer().save(), "foobar\n");
 
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("foo\nbar");
-        feedkeys(&mut vim, &mut buf, "i").no_break();
-        vim.handle_input(&mut buf, Input::Backspace).no_break();
-        assert_eq!(buf.save(), "foo\nbar\n");
+        let (_f, mut vim) = buffer("foo\nbar");
+        feedkeys(&mut vim, "i").no_break();
+        vim.handle_input(Input::Backspace).no_break();
+        assert_eq!(vim.current_buffer().save(), "foo\nbar\n");
 
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("");
-        feedkeys(&mut vim, &mut buf, "i").no_break();
-        vim.handle_input(&mut buf, Input::Backspace).no_break();
-        assert_eq!(buf.save(), "");
+        let (_f, mut vim) = buffer("");
+        feedkeys(&mut vim, "i").no_break();
+        vim.handle_input(Input::Backspace).no_break();
+        assert_eq!(vim.current_buffer().save(), "");
     }
 
     #[test]
     fn a_works() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello world");
-        feedkeys(&mut vim, &mut buf, "lllla,").no_break();
-        assert_eq!(buf.save(), "hello, world\n");
+        let (_f, mut vim) = buffer("hello world");
+        feedkeys(&mut vim, "lllla,").no_break();
+        assert_eq!(vim.current_buffer().save(), "hello, world\n");
         assert_eq!(vim.mode(), Mode::Insert);
-        vim.handle_input(&mut buf, Input::Escape).no_break();
+        vim.handle_input(Input::Escape).no_break();
         assert_eq!(vim.mode(), Mode::Normal);
 
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello, world");
-        feedkeys(&mut vim, &mut buf, "$a!").no_break();
+        let (_f, mut vim) = buffer("hello, world");
+        feedkeys(&mut vim, "$a!").no_break();
         assert_eq!(vim.mode(), Mode::Insert);
-        assert_eq!(buf.save(), "hello, world!\n");
+        assert_eq!(vim.current_buffer().save(), "hello, world!\n");
     }
 
     #[test]
     fn motion_works() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello\nworld\nfoo\nbar");
-        feedkeys(&mut vim, &mut buf, "llj").no_break();
-        assert_eq!(buf.position(), Location::new(1, 2));
-        feedkeys(&mut vim, &mut buf, "k").no_break();
-        assert_eq!(buf.position(), Location::new(0, 2));
-        feedkeys(&mut vim, &mut buf, "h").no_break();
-        assert_eq!(buf.position(), Location::new(0, 1));
-        feedkeys(&mut vim, &mut buf, "lllllll").no_break();
-        assert_eq!(buf.position(), Location::new(0, 4));
+        let (_f, mut vim) = buffer("hello\nworld\nfoo\nbar");
+        feedkeys(&mut vim, "llj").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(1, 2));
+        feedkeys(&mut vim, "k").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 2));
+        feedkeys(&mut vim, "h").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 1));
+        feedkeys(&mut vim, "lllllll").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 4));
     }
 
     #[test]
     fn yank_works() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello\nworld\nfoo\nbar");
-        assert_eq!(buf.position(), Location::new(0, 0));
-        feedkeys(&mut vim, &mut buf, "yyjp").no_break();
-        assert_eq!(buf.save(), "hello\nworld\nhello\nfoo\nbar\n");
-        assert_eq!(buf.position(), Location::new(2, 0));
+        let (_f, mut vim) = buffer("hello\nworld\nfoo\nbar");
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 0));
+        feedkeys(&mut vim, "yyjp").no_break();
+        assert_eq!(
+            vim.current_buffer().save(),
+            "hello\nworld\nhello\nfoo\nbar\n"
+        );
+        assert_eq!(vim.current_buffer().position(), Location::new(2, 0));
     }
 
     #[test]
     fn w_works() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello  world");
-        feedkeys(&mut vim, &mut buf, "w").no_break();
-        assert_eq!(buf.position(), Location::new(0, 7));
-        feedkeys(&mut vim, &mut buf, "w").no_break();
-        assert_eq!(buf.position(), Location::new(0, 11));
+        let (_f, mut vim) = buffer("hello  world");
+        feedkeys(&mut vim, "w").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 7));
+        feedkeys(&mut vim, "w").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 11));
     }
 
     #[test]
     fn o_works() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello  world");
-        feedkeys(&mut vim, &mut buf, "o").no_break();
+        let (_f, mut vim) = buffer("hello  world");
+        feedkeys(&mut vim, "o").no_break();
         assert_eq!(vim.mode(), Mode::Insert);
-        assert_eq!(buf.position(), Location::new(1, 0));
-        assert_eq!(buf.save(), "hello  world\n\n");
+        assert_eq!(vim.current_buffer().position(), Location::new(1, 0));
+        assert_eq!(vim.current_buffer().save(), "hello  world\n\n");
 
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("");
-        feedkeys(&mut vim, &mut buf, "o").no_break();
-        assert_eq!(buf.position(), Location::new(0, 0));
+        let (_f, mut vim) = buffer("");
+        feedkeys(&mut vim, "o").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 0));
     }
 
     #[test]
     fn insert_newline_works() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("helloworld");
-        feedkeys(&mut vim, &mut buf, "llllli\n").no_break();
+        let (_f, mut vim) = buffer("helloworld");
+        feedkeys(&mut vim, "llllli\n").no_break();
         assert_eq!(vim.mode(), Mode::Insert);
-        assert_eq!(buf.position(), Location::new(1, 0));
-        assert_eq!(buf.save(), "hello\nworld\n");
+        assert_eq!(vim.current_buffer().position(), Location::new(1, 0));
+        assert_eq!(vim.current_buffer().save(), "hello\nworld\n");
     }
 
     #[test]
     fn quit_works() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("helloworld");
-        feedkeys(&mut vim, &mut buf, ":q").no_break();
-        feedkeys(&mut vim, &mut buf, "\n").breaks();
+        let (_f, mut vim) = buffer("helloworld");
+        feedkeys(&mut vim, ":q").no_break();
+        feedkeys(&mut vim, "\n").breaks();
     }
 
     #[test]
     fn command_mode() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("helloworld");
-        feedkeys(&mut vim, &mut buf, ":f").no_break();
+        let (_f, mut vim) = buffer("helloworld");
+        feedkeys(&mut vim, ":f").no_break();
         assert_eq!(vim.command_str(), Some((':', "f")));
-        vim.handle_input(&mut buf, Input::Backspace).no_break();
+        vim.handle_input(Input::Backspace).no_break();
         assert_eq!(vim.command_str(), Some((':', "")));
         assert_eq!(vim.mode(), Mode::Command);
-        vim.handle_input(&mut buf, Input::Backspace).no_break();
+        vim.handle_input(Input::Backspace).no_break();
         assert_eq!(vim.mode(), Mode::Normal);
     }
 
     #[test]
     fn set_filename() {
-        let mut vim = Vim::new();
-        let (f, mut buf) = buffer("helloworld");
+        let (f, mut vim) = buffer("helloworld");
         let path = f.path().parent().unwrap().join("other.txt");
         let path_str = path.to_str().unwrap();
 
-        feedkeys(&mut vim, &mut buf, ":f ").no_break();
-        feedkeys(&mut vim, &mut buf, path_str).no_break();
-        feedkeys(&mut vim, &mut buf, "\n").no_break();
-        assert_eq!(buf.path(), Some(path_str));
+        feedkeys(&mut vim, ":f ").no_break();
+        feedkeys(&mut vim, path_str).no_break();
+        feedkeys(&mut vim, "\n").no_break();
+        assert_eq!(vim.current_buffer().path(), Some(path_str));
     }
 
     #[test]
     fn write_works() {
-        let mut vim = Vim::new();
-        let (f, mut buf) = buffer("helloworld");
-        feedkeys(&mut vim, &mut buf, ":w\n").no_break();
+        let (f, mut vim) = buffer("helloworld");
+        feedkeys(&mut vim, ":w\n").no_break();
         let s = std::io::read_to_string(f).unwrap();
         assert_eq!(s, "helloworld\n");
     }
 
     #[test]
     fn write_quit_works() {
-        let mut vim = Vim::new();
-        let (f, mut buf) = buffer("helloworld");
-        feedkeys(&mut vim, &mut buf, ":wq").no_break();
-        feedkeys(&mut vim, &mut buf, "\n").breaks();
+        let (f, mut vim) = buffer("helloworld");
+        feedkeys(&mut vim, ":wq").no_break();
+        feedkeys(&mut vim, "\n").breaks();
         let s = std::io::read_to_string(f).unwrap();
         assert_eq!(s, "helloworld\n");
     }
 
     #[test]
     fn page_up_down() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello\nworld\nfoo");
-        let before = buf.position().line();
-        vim.handle_input(&mut buf, ctrl_key(b'd')).no_break();
-        let after = buf.position().line();
+        let (_f, mut vim) = buffer("hello\nworld\nfoo");
+        let before = vim.current_buffer().position().line();
+        vim.handle_input(ctrl_key(b'd')).no_break();
+        let after = vim.current_buffer().position().line();
         assert!(before < after);
 
-        vim.handle_input(&mut buf, ctrl_key(b'u')).no_break();
-        let last = buf.position().line();
+        vim.handle_input(ctrl_key(b'u')).no_break();
+        let last = vim.current_buffer().position().line();
         assert!(after > last);
     }
 
     #[test]
     fn paste() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello world");
+        let (_f, mut vim) = buffer("hello world");
         vim.state.registers.set_register('"', ",".into(), false);
-        feedkeys(&mut vim, &mut buf, "whh").no_break();
-        assert_eq!(buf.position(), Location::new(0, 4));
-        feedkeys(&mut vim, &mut buf, "p").no_break();
-        assert_eq!(buf.save(), "hello, world\n");
-        assert_eq!(buf.position(), Location::new(0, 5));
+        feedkeys(&mut vim, "whh").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 4));
+        feedkeys(&mut vim, "p").no_break();
+        assert_eq!(vim.current_buffer().save(), "hello, world\n");
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 5));
     }
 
     #[test]
     fn paste_multiline() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello world");
+        let (_f, mut vim) = buffer("hello world");
         vim.state.registers.set_register('"', ",\n!".into(), false);
-        feedkeys(&mut vim, &mut buf, "whhp").no_break();
-        assert_eq!(buf.save(), "hello,\n! world\n");
-        assert_eq!(buf.position(), Location::new(0, 5));
+        feedkeys(&mut vim, "whhp").no_break();
+        assert_eq!(vim.current_buffer().save(), "hello,\n! world\n");
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 5));
     }
 
     #[test]
     fn yank() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello world");
-        feedkeys(&mut vim, &mut buf, "yw").no_break();
+        let (_f, mut vim) = buffer("hello world");
+        feedkeys(&mut vim, "yw").no_break();
         assert_eq!(
             vim.state.registers.get_register('"'),
             &RegisterEntry::new("hello ".into())
         );
-        assert_eq!(buf.position(), Location::new(0, 0));
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 0));
     }
 
     #[test]
     fn delete() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello world");
-        feedkeys(&mut vim, &mut buf, "dw").no_break();
+        let (_f, mut vim) = buffer("hello world");
+        feedkeys(&mut vim, "dw").no_break();
         assert_eq!(
             vim.state.registers.get_register('"'),
             &RegisterEntry::new("hello ".into())
         );
-        assert_eq!(buf.save(), "world\n");
-        assert_eq!(buf.position(), Location::new(0, 0));
+        assert_eq!(vim.current_buffer().save(), "world\n");
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 0));
     }
 
     #[test]
     fn delete_back() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello world");
-        feedkeys(&mut vim, &mut buf, "lllldb").no_break();
+        let (_f, mut vim) = buffer("hello world");
+        feedkeys(&mut vim, "lllldb").no_break();
         assert_eq!(
             vim.state.registers.get_register('"'),
             &RegisterEntry::new("hell".into())
         );
-        assert_eq!(buf.save(), "o world\n");
-        assert_eq!(buf.position(), Location::new(0, 0));
+        assert_eq!(vim.current_buffer().save(), "o world\n");
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 0));
     }
 
     #[test]
     fn end_of_line() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello world");
-        feedkeys(&mut vim, &mut buf, "$").no_break();
-        assert_eq!(buf.position(), Location::new(0, 10));
-        feedkeys(&mut vim, &mut buf, "0").no_break();
-        assert_eq!(buf.position(), Location::new(0, 0));
+        let (_f, mut vim) = buffer("hello world");
+        feedkeys(&mut vim, "$").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 10));
+        feedkeys(&mut vim, "0").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 0));
     }
 
     #[test]
     fn replace_char() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello world");
-        feedkeys(&mut vim, &mut buf, "lra").no_break();
-        assert_eq!(buf.save(), "hallo world\n");
+        let (_f, mut vim) = buffer("hello world");
+        feedkeys(&mut vim, "lra").no_break();
+        assert_eq!(vim.current_buffer().save(), "hallo world\n");
         assert_eq!(vim.mode(), Mode::Normal);
     }
 
     #[test]
     fn replace_newline() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello world");
-        feedkeys(&mut vim, &mut buf, "whr\n").no_break();
-        assert_eq!(buf.save(), "hello\nworld\n");
+        let (_f, mut vim) = buffer("hello world");
+        feedkeys(&mut vim, "whr\n").no_break();
+        assert_eq!(vim.current_buffer().save(), "hello\nworld\n");
         assert_eq!(vim.mode(), Mode::Normal);
     }
 
     #[test]
     fn search() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("foo bar baz");
-        feedkeys(&mut vim, &mut buf, "/ \n").no_break();
-        assert_eq!(buf.position(), Location::new(0, 3));
-        feedkeys(&mut vim, &mut buf, "n").no_break();
-        assert_eq!(buf.position(), Location::new(0, 7));
+        let (_f, mut vim) = buffer("foo bar baz");
+        feedkeys(&mut vim, "/ \n").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 3));
+        feedkeys(&mut vim, "n").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 7));
     }
 
     #[test]
     fn search_back() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("- [ ] `zz`");
-        buf.set_position(0, 7);
-        feedkeys(&mut vim, &mut buf, "? \n").no_break();
-        assert_eq!(buf.position(), Location::new(0, 5));
+        let (_f, mut vim) = buffer("- [ ] `zz`");
+        vim.current_buffer_mut().set_position(0, 7);
+        feedkeys(&mut vim, "? \n").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 5));
     }
 
     #[test]
     fn search_back_multiline() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("- [ ] `aa`\n- [ ] `bb`\n- [ ] `cc`");
-        buf.set_position(2, 7);
-        feedkeys(&mut vim, &mut buf, "? \n").no_break();
-        assert_eq!(buf.position(), Location::new(2, 5));
-        feedkeys(&mut vim, &mut buf, "N").no_break();
-        assert_eq!(buf.position(), Location::new(2, 3));
-        feedkeys(&mut vim, &mut buf, "N").no_break();
-        assert_eq!(buf.position(), Location::new(2, 1));
+        let (_f, mut vim) = buffer("- [ ] `aa`\n- [ ] `bb`\n- [ ] `cc`");
+        vim.current_buffer_mut().set_position(2, 7);
+        feedkeys(&mut vim, "? \n").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(2, 5));
+        feedkeys(&mut vim, "N").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(2, 3));
+        feedkeys(&mut vim, "N").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(2, 1));
         eprintln!("===");
-        feedkeys(&mut vim, &mut buf, "N").no_break();
-        assert_eq!(buf.position(), Location::new(1, 5));
+        feedkeys(&mut vim, "N").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(1, 5));
     }
 
     #[test]
     fn x() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello");
-        feedkeys(&mut vim, &mut buf, "lx").no_break();
-        assert_eq!(buf.save(), "hllo\n");
-        assert_eq!(buf.position(), (0, 1).into());
+        let (_f, mut vim) = buffer("hello");
+        feedkeys(&mut vim, "lx").no_break();
+        assert_eq!(vim.current_buffer().save(), "hllo\n");
+        assert_eq!(vim.current_buffer().position(), (0, 1).into());
         assert_eq!(vim.state.registers.get_register('"').value, "e");
     }
 
     #[test]
     fn f() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello world");
-        feedkeys(&mut vim, &mut buf, "fl").no_break();
-        assert_eq!(buf.position(), (0, 2).into());
-        feedkeys(&mut vim, &mut buf, "fl").no_break();
-        assert_eq!(buf.position(), (0, 3).into());
-        feedkeys(&mut vim, &mut buf, "fl").no_break();
-        assert_eq!(buf.position(), (0, 9).into());
-        feedkeys(&mut vim, &mut buf, "fl").no_break();
-        assert_eq!(buf.position(), (0, 9).into());
+        let (_f, mut vim) = buffer("hello world");
+        feedkeys(&mut vim, "fl").no_break();
+        assert_eq!(vim.current_buffer().position(), (0, 2).into());
+        feedkeys(&mut vim, "fl").no_break();
+        assert_eq!(vim.current_buffer().position(), (0, 3).into());
+        feedkeys(&mut vim, "fl").no_break();
+        assert_eq!(vim.current_buffer().position(), (0, 9).into());
+        feedkeys(&mut vim, "fl").no_break();
+        assert_eq!(vim.current_buffer().position(), (0, 9).into());
     }
 
     #[test]
     fn dj() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("use anyhow::anyhow;\nuse log::LevelFilter;\nblah");
-        feedkeys(&mut vim, &mut buf, "llldj").no_break();
-        assert_eq!(buf.save(), "blah\n");
+        let (_f, mut vim) = buffer("use anyhow::anyhow;\nuse log::LevelFilter;\nblah");
+        feedkeys(&mut vim, "llldj").no_break();
+        assert_eq!(vim.current_buffer().save(), "blah\n");
         assert_eq!(
             vim.state.registers.get_register('"').value,
             "use anyhow::anyhow;\nuse log::LevelFilter;"
@@ -1449,25 +1477,22 @@ mod tests {
 
     #[test]
     fn insert_at_end() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("hello world");
-        feedkeys(&mut vim, &mut buf, "A").no_break();
+        let (_f, mut vim) = buffer("hello world");
+        feedkeys(&mut vim, "A").no_break();
         assert_eq!(vim.mode(), Mode::Insert);
-        assert_eq!(buf.position(), Location::new(0, 11));
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 11));
     }
 
     #[test]
     fn insert_at_start() {
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("   hello world");
-        feedkeys(&mut vim, &mut buf, "wwI").no_break();
+        let (_f, mut vim) = buffer("   hello world");
+        feedkeys(&mut vim, "wwI").no_break();
         assert_eq!(vim.mode(), Mode::Insert);
-        assert_eq!(buf.position(), Location::new(0, 3));
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 3));
 
-        let mut vim = Vim::new();
-        let (_f, mut buf) = buffer("   ");
-        feedkeys(&mut vim, &mut buf, "I").no_break();
-        assert_eq!(buf.position(), Location::new(0, 3));
+        let (_f, mut vim) = buffer("   ");
+        feedkeys(&mut vim, "I").no_break();
+        assert_eq!(vim.current_buffer().position(), Location::new(0, 3));
     }
 
     macro_rules! vim_tests {
@@ -1475,8 +1500,7 @@ mod tests {
             $(
                 #[test]
                 fn $name() {
-                    let mut $vim = Vim::new();
-                    let (_f, mut $buf) = buffer($buffer);
+                    let (_f, mut $vim) = buffer($buffer);
                     $block
                 }
             )*
@@ -1485,35 +1509,35 @@ mod tests {
 
     vim_tests! {
         seek_start() vim, buf = "hello\nworld\nfoo\nbar" => {
-            feedkeys(&mut vim, &mut buf, "jjl").no_break();
-            assert_eq!(buf.position(), Location::new(2, 1));
-            feedkeys(&mut vim, &mut buf, "gg").no_break();
-            assert_eq!(buf.position(), Location::new(0, 1));
+            feedkeys(&mut vim, "jjl").no_break();
+            assert_eq!(vim.current_buffer().position(), Location::new(2, 1));
+            feedkeys(&mut vim, "gg").no_break();
+            assert_eq!(vim.current_buffer().position(), Location::new(0, 1));
         }
         seek_end() vim, buf = "hello\nworld\nfoo\nbar" => {
-            feedkeys(&mut vim, &mut buf, "G").no_break();
-            assert_eq!(buf.position(), Location::new(3, 0));
+            feedkeys(&mut vim, "G").no_break();
+            assert_eq!(vim.current_buffer().position(), Location::new(3, 0));
         }
         swap_lines() vim, buf = "hello\nworld" => {
-            feedkeys(&mut vim, &mut buf, "lddp").no_break();
-            assert_eq!(buf.save(), "world\nhello\n");
+            feedkeys(&mut vim, "lddp").no_break();
+            assert_eq!(vim.current_buffer().save(), "world\nhello\n");
         }
         undo() vim, buf = "hello\nworld" => {
-            feedkeys(&mut vim, &mut buf, "x").no_break();
-            assert_eq!(buf.save(), "ello\nworld\n");
-            feedkeys(&mut vim, &mut buf, "u").no_break();
-            assert_eq!(buf.save(), "hello\nworld\n");
-            vim.handle_input(&mut buf, ctrl_key(b'r')).no_break();
-            assert_eq!(buf.save(), "ello\nworld\n");
+            feedkeys(&mut vim, "x").no_break();
+            assert_eq!(vim.current_buffer().save(), "ello\nworld\n");
+            feedkeys(&mut vim, "u").no_break();
+            assert_eq!(vim.current_buffer().save(), "hello\nworld\n");
+            vim.handle_input( ctrl_key(b'r')).no_break();
+            assert_eq!(vim.current_buffer().save(), "ello\nworld\n");
         }
         cw() vim, buf = "foo bar baz\n1 2 3" => {
-            feedkeys(&mut vim, &mut buf, "cw").no_break();
-            assert_eq!(buf.save(), "bar baz\n1 2 3\n");
+            feedkeys(&mut vim, "cw").no_break();
+            assert_eq!(vim.current_buffer().save(), "bar baz\n1 2 3\n");
             assert_eq!(vim.mode(), Mode::Insert);
         }
         cj() vim, buf = "1\n2\n3\n4" => {
-            feedkeys(&mut vim, &mut buf, "cj").no_break();
-            assert_eq!(buf.save(), "\n3\n4\n");
+            feedkeys(&mut vim, "cj").no_break();
+            assert_eq!(vim.current_buffer().save(), "\n3\n4\n");
             assert_eq!(vim.mode(), Mode::Insert);
         }
     }

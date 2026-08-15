@@ -58,12 +58,9 @@ impl StatusMessage {
 }
 
 pub struct EditorConfig {
-    rows: u16,
     cols: u16,
     out_buf: Vec<u8>,
-    buf: Buffer,
     v: Vim,
-    win: Window,
     getchar: GetChar<StdinSource>,
     status_message: StatusMessage,
 }
@@ -72,13 +69,10 @@ impl EditorConfig {
     pub fn init() -> anyhow::Result<Self> {
         let (cols, rows) = get_terminal_size().ok_or(anyhow!("no terminal size"))?;
         Ok(Self {
-            rows: rows - 2,
-            win: Window::new(cols as usize, rows as usize - 2),
             cols,
             status_message: StatusMessage::new(),
             out_buf: Vec::new(),
-            buf: Buffer::new(),
-            v: Vim::new(),
+            v: Vim::new(Window::new(cols as usize, rows as usize - 2)),
             getchar: GetChar::new(StdinSource),
         })
     }
@@ -193,7 +187,7 @@ fn enter_raw_mode() -> Termios {
 }
 
 fn handle_input(conf: &mut EditorConfig, ch: Input) -> ControlFlow<()> {
-    conf.v.handle_input(&mut conf.buf, ch)
+    conf.v.handle_input(ch)
 }
 
 fn get_terminal_size() -> Option<(u16, u16)> {
@@ -213,7 +207,7 @@ fn refresh_screen(conf: &mut EditorConfig) {
             .extend_from_slice(action.encode_utf8(&mut buf).as_bytes());
         conf.out_buf.extend_from_slice(commandline.as_bytes());
     } else {
-        let (cy, cx) = conf.win.cursor().destruct();
+        let (cy, cx) = conf.v.win().cursor().destruct();
         write!(conf, "\x1b[{};{}H", cy + 1, cx + 1).unwrap();
     }
 
@@ -232,12 +226,12 @@ fn draw_status_bar(conf: &mut EditorConfig) {
     append(conf.v.mode().str().as_bytes());
 
     append(b" ");
-    append(conf.buf.name().as_bytes());
+    append(conf.v.current_buffer().name().as_bytes());
     append(b" ");
 
     let mut buf = [0u8; 16];
 
-    let (cur_line, cur_col) = conf.buf.position().destruct();
+    let (cur_line, cur_col) = conf.v.current_buffer().position().destruct();
     let _ = write!(&mut buf[..], "{}:{}", cur_line + 1, cur_col + 1);
     let pre = buf
         .iter()
@@ -247,7 +241,7 @@ fn draw_status_bar(conf: &mut EditorConfig) {
         .unwrap_or(buf.len());
     append(&buf[..pre]);
 
-    if conf.buf.is_dirty() {
+    if conf.v.current_buffer().is_dirty() {
         append(b" [+]");
     }
 
@@ -263,8 +257,7 @@ fn draw_status_bar(conf: &mut EditorConfig) {
 }
 
 fn draw_rows(conf: &mut EditorConfig) {
-    conf.win.follow_cursor(&conf.buf);
-    for row in conf.win.rows(&conf.buf) {
+    for row in conf.v.win().rows(conf.v.current_buffer()) {
         conf.out_buf.extend_from_slice(row.as_bytes());
         conf.out_buf.extend_from_slice(b"\x1b[K\r\n");
     }
@@ -302,12 +295,9 @@ fn main() -> anyhow::Result<()> {
         env!("CARGO_PKG_VERSION")
     ));
 
-    match std::env::args().nth(1) {
-        Some(file) => {
-            let c = std::fs::read_to_string(&file).unwrap_or_default();
-            conf.buf = Buffer::read(file, &c);
-        }
-        None => conf.buf = Buffer::new(),
+    if let Some(file) = std::env::args().nth(1) {
+        let c = std::fs::read_to_string(&file).unwrap_or_default();
+        conf.v.set_buffer(Buffer::read(file, &c));
     }
 
     loop {

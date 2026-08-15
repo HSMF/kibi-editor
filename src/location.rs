@@ -11,7 +11,7 @@ impl From<(usize, usize)> for Location {
 }
 
 impl Location {
-    pub fn new(line: usize, col: usize) -> Self {
+    pub const fn new(line: usize, col: usize) -> Self {
         Self { line, col }
     }
 

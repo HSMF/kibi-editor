@@ -4,6 +4,8 @@ use crate::{
     location::Location,
 };
 
+const EMPTY_LINE: &str = if cfg!(test) { "~" } else { "\x1b[30m~\x1b[0m" };
+
 pub struct Window {
     row_offset: usize,
     col_offset: usize,
@@ -19,7 +21,7 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn new(width: usize, height: usize) -> Self {
+    pub const fn new(width: usize, height: usize) -> Self {
         Self {
             row_offset: 0,
             col_offset: 0,
@@ -32,6 +34,10 @@ impl Window {
 
     pub fn cursor(&self) -> Location {
         self.cursor
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
     }
 
     /// returns (virt_cursor, offset)
@@ -82,16 +88,16 @@ impl Window {
     }
 
     pub fn move_window(&mut self, dir: CursorDirection) -> bool {
-        let (mut line, mut col) = self.cursor.destruct();
+        let (mut line, col) = self.cursor.destruct();
         let mut moved = true;
         match dir {
-            CursorDirection::Up if line > 0 && self.col_offset > 0 => {
-                line -= 1;
-                self.col_offset -= 1;
-            }
-            CursorDirection::Down if line < self.height - 1 => {
+            CursorDirection::Up if line < self.height - 1 && self.row_offset > 0 => {
                 line += 1;
-                self.col_offset += 1;
+                self.row_offset -= 1;
+            }
+            CursorDirection::Down if line > 0 => {
+                line -= 1;
+                self.row_offset += 1;
             }
             CursorDirection::Left => todo!(),
             CursorDirection::Right => todo!(),
@@ -133,7 +139,7 @@ impl<'a> Iterator for Rows<'a> {
                 let end = self.win.col_offset + self.win.width;
                 &row[get_byte_range_from_char_range(row, start, end)]
             })
-            .unwrap_or("~");
+            .unwrap_or(EMPTY_LINE);
         self.y += 1;
         Some(ret)
     }

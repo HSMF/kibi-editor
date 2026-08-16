@@ -3,12 +3,6 @@
 use std::{env, fmt::Display, io::Write, ops::ControlFlow, os::fd::AsRawFd};
 
 use anyhow::anyhow;
-use log::LevelFilter;
-use log4rs::{
-    append::file::FileAppender,
-    config::{Appender, Root},
-    encode::pattern::PatternEncoder,
-};
 use terminal_size::terminal_size;
 use termios::Termios;
 
@@ -22,6 +16,7 @@ use crate::{
 mod buffer;
 mod get_input;
 pub mod location;
+mod logger;
 pub mod motion;
 mod options;
 pub mod trie;
@@ -280,20 +275,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     if options.debug {
-        let logfile = FileAppender::builder()
-            .encoder(Box::new(PatternEncoder::new(
-                "[{level}] {file}:{line} {message}\n",
-            )))
-            .build("log/output.log")?;
-
-        let config = log4rs::Config::builder()
-            .appender(Appender::builder().build("logfile", Box::new(logfile)))
-            .build(
-                Root::builder()
-                    .appender("logfile")
-                    .build(LevelFilter::Debug),
-            )?;
-        log4rs::init_config(config)?;
+        logger::init()?;
     }
 
     let orig_termios = enter_raw_mode();

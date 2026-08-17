@@ -3,7 +3,6 @@
 use std::{env, fmt::Display, io::Write, ops::ControlFlow, os::fd::AsRawFd};
 
 use anyhow::anyhow;
-use terminal_size::terminal_size;
 use termios::Termios;
 
 use crate::{
@@ -19,6 +18,7 @@ pub mod location;
 mod logger;
 pub mod motion;
 mod options;
+mod term_size;
 pub mod trie;
 mod vim;
 mod window;
@@ -187,7 +187,7 @@ fn handle_input(conf: &mut EditorConfig, ch: Input) -> ControlFlow<()> {
 }
 
 fn get_terminal_size() -> Option<(u16, u16)> {
-    terminal_size().map(|(a, b)| (a.0, b.0))
+    term_size::get_terminal_size()
 }
 
 fn refresh_screen(conf: &mut EditorConfig) {

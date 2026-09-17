@@ -1,10 +1,22 @@
-#[derive(Debug, PartialEq, Eq, Default)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Options {
     pub file: Option<String>,
     pub print_supported_keymaps: bool,
     pub debug: bool,
     pub version: bool,
     pub commands: Vec<String>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            file: None,
+            version: false,
+            print_supported_keymaps: false,
+            commands: vec![],
+            debug: DEFAULT_DEBUG,
+        }
+    }
 }
 
 const DEFAULT_DEBUG: bool = cfg!(debug_assertions);
@@ -37,13 +49,7 @@ impl Options {
         let mut args = args.into_iter();
         args.next();
 
-        let mut ret = Self {
-            file: None,
-            version: false,
-            print_supported_keymaps: false,
-            commands: vec![],
-            debug: DEFAULT_DEBUG,
-        };
+        let mut ret = Self::default();
 
         while let Some(arg) = args.next() {
             if arg == "--" {

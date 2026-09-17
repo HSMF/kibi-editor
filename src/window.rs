@@ -58,36 +58,39 @@ impl Window {
         self.height
     }
 
-    /// returns (virt_cursor, offset)
+    /// returns (change in virt_cursor, change in offset) in terms of logical chars
     fn scroll(
         pos: usize,
         old_pos: usize,
         max: usize,
         virt_cursor: usize,
-        offset: usize,
-    ) -> (usize, usize) {
+        get_diff: impl FnOnce(usize, usize) -> usize,
+    ) -> (isize, isize) {
         match pos.cmp(&old_pos) {
             // moved up
             std::cmp::Ordering::Less => {
-                let diff = old_pos - pos;
+                let diff = dbg!(get_diff(dbg!(pos), dbg!(old_pos)));
 
-                if virt_cursor > diff {
-                    (virt_cursor - diff, offset)
+                if dbg!(virt_cursor) > diff {
+                    dbg!((-diff.cast_signed(), 0))
                 } else {
                     let diff = diff - virt_cursor;
-                    (0, offset - diff)
+                    (-virt_cursor.cast_signed(), -diff.cast_signed())
                 }
             }
-            std::cmp::Ordering::Equal => (virt_cursor, offset),
+            std::cmp::Ordering::Equal => (0, 0),
             // moved down
             std::cmp::Ordering::Greater => {
-                let diff = pos - old_pos;
+                let diff = get_diff(old_pos, pos);
 
-                if virt_cursor + diff < max {
-                    (virt_cursor + diff, offset)
+                if (virt_cursor + diff) < max {
+                    (diff.cast_signed(), 0)
                 } else {
-                    let diff = diff - (max - virt_cursor);
-                    (max - 1, offset + diff + 1)
+                    assert!(virt_cursor < max);
+                    let available_space = max - virt_cursor - 1;
+                    let diff_offset = diff - available_space;
+                    assert!(diff > 0);
+                    (available_space.cast_signed(), diff_offset.cast_signed())
                 }
             }
         }
@@ -98,8 +101,24 @@ impl Window {
         let (old_line, old_col) = self.prev_cursor.destruct();
         let (mut cy, mut cx) = self.cursor.destruct();
 
-        (cy, self.row_offset) = Self::scroll(line, old_line, self.height, cy, self.row_offset);
-        (cx, self.col_offset) = Self::scroll(col, old_col, self.width, cx, self.col_offset);
+        let (d_cy, d_row_offset) =
+            Self::scroll(line, old_line, self.height, cy, |start, end| end - start);
+        cy = cy.wrapping_add_signed(d_cy);
+        self.row_offset = self.row_offset.wrapping_add_signed(d_row_offset);
+        let cur_row = buf.get_row(line).unwrap_or_default();
+        let (d_cx, d_col_offset) = Self::scroll(col, old_col, self.width, cx, |start, end| {
+            let render_len = |prefix| -> usize {
+                cur_row
+                    .chars()
+                    .take(prefix)
+                    .map(crate::buffer::rendered_char)
+                    .map(|x| x.len())
+                    .sum()
+            };
+            render_len(end) - render_len(start)
+        });
+        cx = cx.wrapping_add_signed(d_cx);
+        self.col_offset = self.col_offset.wrapping_add_signed(d_col_offset);
 
         self.cursor = Location::new(cy, cx);
         self.prev_cursor = Location::new(line, col);
@@ -263,6 +282,9 @@ mod tests {
             .into_iter()
             .map(|x| x.to_string())
             .collect::<Vec<_>>();
+        let (line, col) = win.cursor().destruct();
+        assert!(line < win.height(), "{line} >= {}", win.height());
+        assert!(col < win.width);
 
         draw_win(win, buf);
         assert_eq!(got, expected);
@@ -338,6 +360,13 @@ mod tests {
             expected![..(11..=20).map(|x| &*x.to_string().leak())],
         );
 
+        buf.set_position(23, 0);
+        check_rows(
+            &mut win,
+            &buf,
+            expected![..(14..=23).map(|x| &*x.to_string().leak())],
+        );
+
         buf.set_position(5, 0);
         check_rows(
             &mut win,
@@ -373,5 +402,33 @@ mod tests {
         check_rows(&mut win, &buf, expected!["2345678910", ..["~"].repeat(9)]);
         buf.set_position(0, 1);
         check_rows(&mut win, &buf, expected!["1234567891", ..["~"].repeat(9)]);
+    }
+
+    #[test]
+    fn tabs() {
+        let name = "t".to_owned();
+        let mut buf = Buffer::read(name, "\thello\tworld");
+        let mut win = Window::new(10, 10);
+        check_rows(&mut win, &buf, expected!["    hello ", ..["~"].repeat(9)]);
+        buf.move_cursor(CursorDirection::Right);
+        check_rows(&mut win, &buf, expected!["    hello ", ..["~"].repeat(9)]);
+        assert_eq!(win.cursor(), Location::new(0, 4));
+    }
+
+    #[test]
+    fn delete() {
+        let name = "t".to_owned();
+        let mut buf = Buffer::read(name, "hello");
+        buf.set_position(0, 5);
+        let mut win = Window::new(10, 10);
+        check_rows(&mut win, &buf, expected!["hello", ..["~"].repeat(9)]);
+
+        assert_eq!(buf.position(), win.cursor());
+
+        buf.delete_range(Location::new(0, 3), Location::new(0, 5));
+        check_rows(&mut win, &buf, expected!["hel", ..["~"].repeat(9)]);
+        assert_eq!(buf.position(), win.cursor());
+        assert_eq!(buf.position(), Location::new(0, 2));
+        assert_eq!(win.cursor(), Location::new(0, 2));
     }
 }

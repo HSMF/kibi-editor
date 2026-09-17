@@ -61,23 +61,22 @@ fn to_hex(x: u8) -> (char, char) {
     (hex_dig(hi) as char, hex_dig(lo) as char)
 }
 
-impl Row {
-    fn rendered_char(ch: char) -> ArrayVec<[char; 16]> {
-        match ch {
-            '\t' => array_vec!(_ => ' ', ' ', ' ', ' '),
-            ch if ch.is_ascii_control() => {
-                let (a, b) = to_hex(ch as u8);
-                array_vec!(_ => 'X', a, b)
-            }
-            ch => array_vec!(_ => ch),
+pub fn rendered_char(ch: char) -> ArrayVec<[char; 16]> {
+    match ch {
+        '\t' => array_vec!(_ => ' ', ' ', ' ', ' '),
+        ch if ch.is_ascii_control() => {
+            let (a, b) = to_hex(ch as u8);
+            array_vec!(_ => 'X', a, b)
         }
+        ch => array_vec!(_ => ch),
     }
-
+}
+impl Row {
     fn rendered(s: &str) -> (String, usize) {
         let mut ret = String::new();
         let mut len = 0;
         for ch in s.chars() {
-            for r in Self::rendered_char(ch) {
+            for r in rendered_char(ch) {
                 ret.push(r)
             }
             len += 1;
@@ -105,14 +104,14 @@ impl Row {
         self.content
             .chars()
             .take(cx.into())
-            .map(|ch| Self::rendered_char(ch).len() as u16)
+            .map(|ch| rendered_char(ch).len() as u16)
             .sum()
     }
 
     fn insert_char(&mut self, ch: char, cur_col: usize) {
         if cur_col == self.content_len() {
             self.content.push(ch);
-            for ch in Self::rendered_char(ch) {
+            for ch in rendered_char(ch) {
                 self.render.push(ch);
             }
         } else {
@@ -359,7 +358,7 @@ impl Buffer {
         (cx.try_into().unwrap(), cy.try_into().unwrap())
     }
 
-    fn cx_to_rendered(&self, cx: u16) -> u16 {
+    pub(crate) fn cx_to_rendered(&self, cx: u16) -> u16 {
         let Some(row) = self.row.get(self.cur_line) else {
             return 0;
         };

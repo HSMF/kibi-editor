@@ -233,6 +233,10 @@ impl Buffer {
         self.clamp_cursor();
     }
 
+    pub fn go_past_end(&self) -> bool {
+        self.allow_one_past
+    }
+
     fn clamp_cursor(&mut self) {
         let limit = self.row_len(self.cur_line);
         let limit = if self.allow_one_past {

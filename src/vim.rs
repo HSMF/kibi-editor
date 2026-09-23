@@ -696,6 +696,10 @@ impl Vim {
         &self.win
     }
 
+    pub fn follow_cursor(&mut self) {
+        self.win.follow_cursor(&self.buf);
+    }
+
     pub fn command_str(&self) -> Option<(char, &str)> {
         match &self.state.mode {
             ModeState::Command { action, cmdline } => Some((action.char(), cmdline)),

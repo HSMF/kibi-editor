@@ -1,8 +1,8 @@
-use std::fmt::Display;
+use std::{fmt::Display, ops::Range};
 
 use crate::{
     CursorDirection,
-    buffer::{Buffer, get_byte_range_from_char_range},
+    buffer::{Buffer, char_idx_to_byte_idx, get_byte_range_from_char_range},
     location::Location,
 };
 
@@ -31,6 +31,8 @@ pub struct Window {
 
     height: usize,
     width: usize,
+
+    pub(crate) visual: Option<Range<Location>>,
 }
 
 impl Window {
@@ -43,6 +45,7 @@ impl Window {
             cursor: Location::new(0, 0),
             height,
             width,
+            visual: None,
         }
     }
 
@@ -217,6 +220,31 @@ impl Window {
             y: 0,
         }
     }
+
+    fn hl_for_row(&self, lnum: usize, row: &str) -> Range<usize> {
+        const EMPTY: Range<usize> = 0..0;
+        let Some(visual) = &self.visual else {
+            return EMPTY;
+        };
+
+        if lnum < visual.start.line() || lnum > visual.end.line() {
+            return EMPTY;
+        }
+
+        if lnum == visual.start.line() && lnum == visual.end.line() {
+            return get_byte_range_from_char_range(row, visual.start.col(), visual.end.col());
+        }
+
+        if lnum == visual.start.line() {
+            return char_idx_to_byte_idx(row, visual.start.col()).unwrap_or(0)..row.len();
+        }
+
+        if lnum == visual.end.line() {
+            return 0..char_idx_to_byte_idx(row, visual.end.col()).unwrap_or(row.len());
+        }
+
+        0..row.len()
+    }
 }
 
 pub struct Rows<'a> {
@@ -228,6 +256,7 @@ pub struct Rows<'a> {
 pub struct Row<'a> {
     row: &'a str,
     num: Option<usize>,
+    hl: Range<usize>,
 }
 
 impl Display for Row<'_> {
@@ -238,7 +267,17 @@ impl Display for Row<'_> {
             write!(f, "\x1b[30m{num:>3}\x1b[0m ")?;
         }
 
-        write!(f, "{}", self.row)?;
+        if self.hl.is_empty() {
+            write!(f, "{}", self.row)?;
+        } else {
+            write!(f, "{}", &self.row[..self.hl.start])?;
+            write!(
+                f,
+                "\x1b[40m{}\x1b[0m",
+                &self.row[self.hl.start..self.hl.end]
+            )?;
+            write!(f, "{}", &self.row[self.hl.end..])?;
+        }
 
         Ok(())
     }
@@ -262,6 +301,7 @@ impl<'a> Iterator for Rows<'a> {
             .map(|row| &row[get_byte_range_from_char_range(row, start, end)]);
         self.y += 1;
         if let Some(ret) = ret {
+            let hl = self.win.hl_for_row(self.win.row_offset + self.y - 1, ret);
             Some(Row {
                 row: ret,
                 num: self
@@ -269,11 +309,13 @@ impl<'a> Iterator for Rows<'a> {
                     .options
                     .number
                     .then_some(self.win.row_offset + self.y),
+                hl,
             })
         } else {
             Some(Row {
                 row: EMPTY_LINE,
                 num: None,
+                hl: 0..0,
             })
         }
     }
@@ -509,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_to_scroll2() {
+    fn delete_in_insert() {
         let name = "t".to_owned();
         let mut buf = Buffer::read(name, "hello world foo bar baz");
         let mut win = Window::new(10, 10);
@@ -524,5 +566,18 @@ mod tests {
         check_rows(&mut win, &buf, expected!["o bar ba", ..["~"].repeat(9)]);
 
         assert_eq!(win.cursor(), Location::new(0, 8));
+    }
+
+    #[test]
+    fn delete_middle() {
+        let name = "t".to_owned();
+        let mut buf = Buffer::read(name, "hello world foo bar baz");
+        let mut win = Window::new(10, 10);
+        buf.set_position(0, 15);
+        check_rows(&mut win, &buf, expected!["world foo ", ..["~"].repeat(9)]);
+
+        buf.set_position(0, 13);
+        buf.delete_range(buf.position() - (0, 1), buf.position());
+        check_rows(&mut win, &buf, expected!["world oo b", ..["~"].repeat(9)]);
     }
 }

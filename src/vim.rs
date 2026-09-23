@@ -80,7 +80,10 @@ enum ModeState {
     #[default]
     Normal,
     Insert,
-    Visual,
+    Visual {
+        start: Location,
+        end: Location,
+    },
     Command {
         action: CommandAction,
         cmdline: String,
@@ -104,7 +107,7 @@ impl From<&ModeState> for Mode {
         match value {
             ModeState::Normal => Self::Normal,
             ModeState::Insert => Self::Insert,
-            ModeState::Visual => Self::Visual,
+            ModeState::Visual { .. } => Self::Visual,
             ModeState::Command { .. } => Self::Command,
         }
     }
@@ -320,7 +323,7 @@ trait ConfigureKeymap {
                 }
             };
             mut a, ['i'] => a.set_mode(ModeState::Insert);
-            mut a, ['v'] => a.set_mode(ModeState::Visual);
+            mut a, ['v'] => a.set_mode(ModeState::Visual { start: a.buf.position(), end: a.buf.position() });
             a, ['g' 'g'] => buf_seek_line(a.buf, 0);
             a, ['G'] => buf_seek_line(a.buf, a.buf.num_lines());
             mut a, ['a'] => {
@@ -651,11 +654,50 @@ trait ConfigureKeymap {
         use Input as I;
         self.add_keymap(mode, [I::Escape], |mut a| a.set_mode(ModeState::Normal));
         self.configure_arrow_keys(mode);
-        self.add_keymap(mode, [I::Enter], |a| a.buf.add_newline());
-        self.add_keymap(mode, [I::Char('h')], |a| a.buf.move_cursor(C::Left));
-        self.add_keymap(mode, [I::Char('j')], |a| a.buf.move_cursor(C::Down));
-        self.add_keymap(mode, [I::Char('k')], |a| a.buf.move_cursor(C::Up));
-        self.add_keymap(mode, [I::Char('l')], |a| a.buf.move_cursor(C::Right));
+
+        fn do_simple_motion(a: &mut MapArgs, motion: impl Motion) {
+            if let Some(next) = motion.next(a.buf) {
+                a.buf.set_position(next.line(), next.col());
+            }
+        }
+
+        keymaps! {
+            &mut MapArgs, pat, act => {
+                self.add_keymap_op_pending(Mode::Visual, pat, move |mut a| {
+                    act(&mut a);
+                    let ModeState::Visual {start, end: _} = &a.state.mode else {
+                        return;
+                    };
+                    a.state.mode = ModeState::Visual {
+                        start: *start,
+                        end: a.buf.position(),
+                    };
+                })
+            },
+            a, [ESC] => a.set_mode(ModeState::Normal);
+            a, ['h'] => a.buf.move_cursor(C::Left);
+            a, ['j'] => a.buf.move_cursor(C::Down);
+            a, ['k'] => a.buf.move_cursor(C::Up);
+            a, ['l'] => a.buf.move_cursor(C::Right);
+            a, ['d'] => {
+                log::debug!("todo: delete");
+                a.set_mode(ModeState::Normal);
+            };
+            a, ['y'] => {
+                log::debug!("todo: yank");
+                a.set_mode(ModeState::Normal);
+            };
+            a, ['h'] => do_simple_motion(a, Left::new());
+            a, ['j'] => do_simple_motion(a, Down::new());
+            a, ['k'] => do_simple_motion(a, Up::new());
+            a, ['l'] => do_simple_motion(a, Right::new());
+            a, ['w'] => do_simple_motion(a, Word::new());
+            a, ['W'] => do_simple_motion(a, BigWord::new());
+            a, ['b'] => do_simple_motion(a, Back::new());
+            a, ['B'] => do_simple_motion(a, BigBack::new());
+            a, ['$'] => do_simple_motion(a, EndOfLine::new());
+            a, ['0'] => do_simple_motion(a, StartOfLine::new());
+        }
     }
 }
 
@@ -730,6 +772,17 @@ impl Vim {
         }
     }
 
+    pub fn visual_range(&self) -> Option<std::ops::Range<Location>> {
+        let ModeState::Visual { start, end } = self.state.mode else {
+            return None;
+        };
+        if start < end {
+            Some(start..end)
+        } else {
+            Some(end..start)
+        }
+    }
+
     pub fn handle_input(&mut self, ch: Input) -> ControlFlow<()> {
         macro_rules! handle_mode {
             ($self:expr, $keymaps:ident) => {
@@ -777,8 +830,9 @@ impl Vim {
                 }
             ),
 
-            ModeState::Visual => handle_mode!(self, visual_keymaps),
+            ModeState::Visual { .. } => handle_mode!(self, visual_keymaps),
         }
+        self.win.visual = self.visual_range();
         if self.state.quit {
             ControlFlow::Break(())
         } else {
@@ -1032,7 +1086,7 @@ impl VimState {
             buf.finish_action();
         }
         match mode {
-            ModeState::Normal | ModeState::Visual | ModeState::Command { .. } => {
+            ModeState::Normal | ModeState::Visual { .. } | ModeState::Command { .. } => {
                 buf.set_go_past_end(false)
             }
             ModeState::Insert => {

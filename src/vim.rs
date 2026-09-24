@@ -166,6 +166,14 @@ enum LookupKeymap<'a> {
     NoMatch,
 }
 
+fn sort_location(start: Location, end: Location) -> (Location, Location) {
+    if end < start {
+        (end, start)
+    } else {
+        (start, end)
+    }
+}
+
 macro_rules! pattern {
     () => {
         std::iter::empty()
@@ -483,14 +491,6 @@ trait ConfigureKeymap {
             };
         }
 
-        fn sort_location(start: Location, end: Location) -> (Location, Location) {
-            if end < start {
-                (end, start)
-            } else {
-                (start, end)
-            }
-        }
-
         self.configure_motions(&[I::Char('d')], |a, start, end, linewise| {
             let (start, end) = sort_location(start, end);
             debug!("delete {start:?} {end:?}");
@@ -789,11 +789,8 @@ impl Vim {
         let ModeState::Visual { start, end } = self.state.mode else {
             return None;
         };
-        if start < end {
-            Some(start..end)
-        } else {
-            Some(end..start)
-        }
+        let (start, end) = sort_location(start, end);
+        Some(start..end + (0, 1))
     }
 
     pub fn handle_input(&mut self, ch: Input) -> ControlFlow<()> {

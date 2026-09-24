@@ -969,6 +969,13 @@ impl VimState {
                 write(buf);
             }
             "qa" | "qa!" | "q" | "q!" => quit(self),
+            "redraw" => {
+                let (cols, rows) = crate::term_size::get_terminal_size()
+                    .map(|(x, y)| (x as usize, y as usize))
+                    .unwrap_or((win.height, win.width));
+                win.height = rows - 2;
+                win.width = cols;
+            }
             s if let Some(search) = s.strip_prefix("/") => {
                 self.execute_search(buf, search);
             }

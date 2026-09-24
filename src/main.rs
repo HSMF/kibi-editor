@@ -57,7 +57,6 @@ impl StatusMessage {
 }
 
 pub struct EditorConfig {
-    cols: u16,
     out_buf: Vec<u8>,
     v: Vim,
     getchar: GetChar<StdinSource>,
@@ -68,12 +67,15 @@ impl EditorConfig {
     pub fn init() -> anyhow::Result<Self> {
         let (cols, rows) = get_terminal_size().ok_or(anyhow!("no terminal size"))?;
         Ok(Self {
-            cols,
             status_message: StatusMessage::new(),
             out_buf: Vec::new(),
             v: Vim::new(Window::new(cols as usize, rows as usize - 2)),
             getchar: GetChar::new(StdinSource),
         })
+    }
+
+    fn cols(&self) -> u16 {
+        self.v.win().width.try_into().unwrap()
     }
 
     pub fn append(&mut self, s: impl AsRef<[u8]>) {
@@ -249,7 +251,7 @@ fn draw_status_bar(conf: &mut EditorConfig) {
         append(sm.as_bytes());
     }
 
-    for _ in (col as u16)..conf.cols {
+    for _ in (col as u16)..conf.cols() {
         conf.append(" ");
     }
     conf.append("\x1b[m");

@@ -30,8 +30,8 @@ pub struct Window {
     /// cursor as it is on the screen
     cursor: Location,
 
-    height: usize,
-    width: usize,
+    pub(crate) height: usize,
+    pub(crate) width: usize,
 
     pub(crate) visual: Option<Range<Location>>,
 }

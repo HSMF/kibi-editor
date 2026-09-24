@@ -713,7 +713,7 @@ impl Buffer {
     }
 
     pub fn insert_char(&mut self, ch: char) {
-		use crate::render::TAB_WIDTH;
+        use crate::render::TAB_WIDTH;
         if ch == '\t' && self.options.expandtab {
             let cur_col = self.cur_col;
             let spill = cur_col % TAB_WIDTH;

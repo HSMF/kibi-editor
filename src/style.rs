@@ -1,9 +1,5 @@
 const fn style(s: &str) -> &str {
-    if cfg!(test) {
-        ""
-    } else {
-        s
-    }
+    if cfg!(test) { "" } else { s }
 }
 
 pub const MUTED: &str = style("\x1b[30m");

@@ -15,13 +15,13 @@ use crate::{
 };
 
 mod buffer;
-mod style;
 mod get_input;
 pub mod location;
 mod logger;
 pub mod motion;
 mod options;
 mod render;
+mod style;
 mod term_size;
 pub mod trie;
 mod vim;

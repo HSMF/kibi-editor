@@ -7,7 +7,7 @@ use crate::{
     render::IterExt,
 };
 
-use crate::style::{MUTED, RESET, HIGHLIGHT};
+use crate::style::{HIGHLIGHT, MUTED, RESET};
 
 const EMPTY_LINE: &str = if cfg!(test) { "~" } else { "\x1b[30m~\x1b[0m" };
 
@@ -116,7 +116,7 @@ impl Window {
         let render_pos: usize = cur_row.chars().rendered().take(col).map(|x| x.len()).sum();
         let window_start = self.col_offset;
         let width = self.effective_width();
-        let window_end = self.col_offset + width; 
+        let window_end = self.col_offset + width;
         let window = window_start..window_end;
 
         if window.contains(&render_pos) {
@@ -592,25 +592,24 @@ mod tests {
         let mut win = Window::new(10, 10);
 
         win.options.number = true;
-        check_rows(&mut win, &buf, expected![
-                "  1 hello,",
-                "  2 foo ba",
-                ..["~"].repeat(8)
-            ]);
+        check_rows(
+            &mut win,
+            &buf,
+            expected!["  1 hello,", "  2 foo ba", ..["~"].repeat(8)],
+        );
 
         buf.set_position(0, 8);
-        check_rows(&mut win, &buf, expected![
-                "  1 lo, wo",
-                "  2  bar b",
-                ..["~"].repeat(8)
-            ]);
+        check_rows(
+            &mut win,
+            &buf,
+            expected!["  1 lo, wo", "  2  bar b", ..["~"].repeat(8)],
+        );
 
         buf.set_position(0, 12);
-        check_rows(&mut win, &buf, expected![
-                "  1 world!",
-                "  2  baz",
-                ..["~"].repeat(8)
-            ]);
-    
+        check_rows(
+            &mut win,
+            &buf,
+            expected!["  1 world!", "  2  baz", ..["~"].repeat(8)],
+        );
     }
 }

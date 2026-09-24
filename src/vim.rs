@@ -988,6 +988,9 @@ impl VimState {
                 "number" | "nu" => {
                     win.options.number = true;
                 }
+                "nonumber" | "nonu" => {
+                    win.options.number = false;
+                }
                 _ => warn!("unknown option: {option:?}"),
             },
             // :<num> => seek to line

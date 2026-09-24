@@ -15,7 +15,9 @@
 
 ## options
 
-- `expandtab` (sorry Qwendu)
+- [ ] `expandtab` / `noexpandtab` / `et` / `noet` (sorry Qwendu)
+- [ ] `wrap` / `nowrap`
+- [x] `number` / `nonumber`
 
 
 ## UI 

@@ -117,6 +117,24 @@ impl Motion for StartOfLine {
     }
 }
 
+pub struct StartOfFile;
+pub struct EndOfFile;
+
+impl_new!(EndOfFile);
+impl_new!(StartOfFile);
+
+impl Motion for StartOfFile {
+    fn next(&self, buf: &Buffer) -> Option<Location> {
+        Some(Location::new(0, buf.position().col()))
+    }
+}
+
+impl Motion for EndOfFile {
+    fn next(&self, buf: &Buffer) -> Option<Location> {
+        Some(Location::new(buf.num_lines(), buf.position().col()))
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum CharClass {
     Word,

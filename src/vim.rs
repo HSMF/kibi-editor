@@ -9,8 +9,8 @@ use crate::{
     ctrl_key,
     location::Location,
     motion::{
-        Back, BigBack, BigWord, Down, EndOfLine, Left, Motion, Right, SeekUntilChar, StartOfLine,
-        Up, Word,
+        Back, BigBack, BigWord, Down, EndOfFile, EndOfLine, Left, Motion, Right, SeekUntilChar,
+        StartOfFile, StartOfLine, Up, Word,
     },
     trie::{Index, Trie},
     window::Window,
@@ -324,8 +324,6 @@ trait ConfigureKeymap {
             };
             mut a, ['i'] => a.set_mode(ModeState::Insert);
             mut a, ['v'] => a.set_mode(ModeState::Visual { start: a.buf.position(), end: a.buf.position() });
-            a, ['g' 'g'] => buf_seek_line(a.buf, 0);
-            a, ['G'] => buf_seek_line(a.buf, a.buf.num_lines());
             mut a, ['a'] => {
                 let (line, col) = a.buf.position().destruct();
                 a.set_mode(ModeState::Insert);
@@ -417,6 +415,8 @@ trait ConfigureKeymap {
                 a.buf.redo();
             };
 
+            a, ['g' 'g'] => do_simple_motion(a, StartOfFile::new());
+            a, ['G'] => do_simple_motion(a, EndOfFile::new());
             a, ['h'] => do_simple_motion(a, Left::new());
             a, ['j'] => do_simple_motion(a, Down::new());
             a, ['k'] => do_simple_motion(a, Up::new());
@@ -428,17 +428,8 @@ trait ConfigureKeymap {
             a, ['$'] => do_simple_motion(a, EndOfLine::new());
             a, ['0'] => do_simple_motion(a, StartOfLine::new());
             a, ['f' ANY] => {
-                let motion = match a.cur_input.last().expect("have last char") {
-                    I::Char(ch) => Some(SeekUntilChar::new(*ch)),
-                    _ => None,
-                };
+                let motion = a.cur_input.last().expect("have last char").char().map(SeekUntilChar::new);
                 do_simple_motion(a, motion);
-            };
-            mut a, [':'] => {
-                a.set_mode(ModeState::Command {
-                    cmdline: String::new(),
-                    action: CommandAction::Command,
-                })
             };
             a, ['n'] => {
                 a.state
@@ -447,6 +438,13 @@ trait ConfigureKeymap {
             a, ['N'] =>  {
                 a.state
                     .execute_search_previous(a.buf, &a.state.registers.get_register('/').value);
+            };
+
+            mut a, [':'] => {
+                a.set_mode(ModeState::Command {
+                    cmdline: String::new(),
+                    action: CommandAction::Command,
+                })
             };
             mut a, ['/'] => {
                 a.set_mode(ModeState::Command {
@@ -687,6 +685,9 @@ trait ConfigureKeymap {
                 log::debug!("todo: yank");
                 a.set_mode(ModeState::Normal);
             };
+
+            a, ['g' 'g'] => do_simple_motion(a, StartOfFile::new());
+            a, ['G'] => do_simple_motion(a, EndOfFile::new());
             a, ['h'] => do_simple_motion(a, Left::new());
             a, ['j'] => do_simple_motion(a, Down::new());
             a, ['k'] => do_simple_motion(a, Up::new());
@@ -697,6 +698,18 @@ trait ConfigureKeymap {
             a, ['B'] => do_simple_motion(a, BigBack::new());
             a, ['$'] => do_simple_motion(a, EndOfLine::new());
             a, ['0'] => do_simple_motion(a, StartOfLine::new());
+            a, ['f' ANY] => {
+                let motion = a.cur_input.last().expect("have last char").char().map(SeekUntilChar::new);
+                do_simple_motion(a, motion);
+            };
+            a, ['n'] => {
+                a.state
+                    .execute_search(a.buf, &a.state.registers.get_register('/').value);
+            };
+            a, ['N'] =>  {
+                a.state
+                    .execute_search_previous(a.buf, &a.state.registers.get_register('/').value);
+            };
         }
     }
 }

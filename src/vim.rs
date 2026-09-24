@@ -259,7 +259,7 @@ macro_rules! keymaps {
     ) => {
         {
         let $pat = pattern!($($pattern)*);
-        let $act = |$state: $t| $action;
+        let $act = move |$state: $t| $action;
         let _ = $pat;
         let _ = $act;
         $e
@@ -280,6 +280,57 @@ macro_rules! keymaps {
         }
         keymaps!($t, $pat, $act => $e, $($tt)*)
     };
+}
+
+fn owned_range_action(
+    f: impl Fn(&mut MapArgs, Location, Location, bool) + Clone,
+) -> impl Fn(MapArgs, Location, Location, bool) + Clone {
+    move |mut a, start, end, linewise| f(&mut a, start, end, linewise)
+}
+
+fn delete(a: &mut MapArgs, start: Location, end: Location, linewise: bool) {
+    let (start, end) = sort_location(start, end);
+    debug!("delete {start:?} {end:?}");
+
+    if linewise {
+        let s = join_iter(a.buf.get_lines(start.line()..=end.line()));
+        a.buf.remove_lines(start.line()..end.line() + 1);
+        a.state.registers.set_register('"', s, true);
+        return;
+    }
+
+    let s = join_iter(a.buf.get_range(start, end));
+    a.buf.delete_range(start, end);
+    a.state.registers.set_register('"', s, false);
+}
+
+fn change(a: &mut MapArgs, start: Location, end: Location, linewise: bool) {
+    let (start, end) = sort_location(start, end);
+
+    if linewise {
+        let s = join_iter(a.buf.get_lines(start.line()..=end.line()));
+        a.buf.remove_lines(start.line()..end.line() + 1);
+        a.state.registers.set_register('"', s, true);
+        a.buf.insert_lines(start.line(), std::iter::once(""));
+        a.set_mode(ModeState::Insert);
+        return;
+    }
+
+    let s = join_iter(a.buf.get_range(start, end));
+    a.buf.delete_range(start, end);
+    a.state.registers.set_register('"', s, false);
+    a.set_mode(ModeState::Insert);
+}
+
+fn yank(a: &mut MapArgs, start: Location, end: Location, linewise: bool) {
+    let (start, end) = sort_location(start, end);
+    if linewise {
+        let s = join_iter(a.buf.get_lines(start.line()..=end.line()));
+        a.state.registers.set_register('"', s, true);
+        return;
+    }
+    let s = join_iter(a.buf.get_range(start, end));
+    a.state.registers.set_register('"', s, false);
 }
 
 trait ConfigureKeymap {
@@ -491,48 +542,9 @@ trait ConfigureKeymap {
             };
         }
 
-        self.configure_motions(&[I::Char('d')], |a, start, end, linewise| {
-            let (start, end) = sort_location(start, end);
-            debug!("delete {start:?} {end:?}");
-
-            if linewise {
-                let s = join_iter(a.buf.get_lines(start.line()..=end.line()));
-                a.buf.remove_lines(start.line()..end.line() + 1);
-                a.state.registers.set_register('"', s, true);
-                return;
-            }
-
-            let s = join_iter(a.buf.get_range(start, end));
-            a.buf.delete_range(start, end);
-            a.state.registers.set_register('"', s, false);
-        });
-        self.configure_motions(&[I::Char('c')], |mut a, start, end, linewise| {
-            let (start, end) = sort_location(start, end);
-
-            if linewise {
-                let s = join_iter(a.buf.get_lines(start.line()..=end.line()));
-                a.buf.remove_lines(start.line()..end.line() + 1);
-                a.state.registers.set_register('"', s, true);
-                a.buf.insert_lines(start.line(), std::iter::once(""));
-                a.set_mode(ModeState::Insert);
-                return;
-            }
-
-            let s = join_iter(a.buf.get_range(start, end));
-            a.buf.delete_range(start, end);
-            a.state.registers.set_register('"', s, false);
-            a.set_mode(ModeState::Insert);
-        });
-        self.configure_motions(&[I::Char('y')], |a, start, end, linewise| {
-            let (start, end) = sort_location(start, end);
-            if linewise {
-                let s = join_iter(a.buf.get_lines(start.line()..=end.line()));
-                a.state.registers.set_register('"', s, true);
-                return;
-            }
-            let s = join_iter(a.buf.get_range(start, end));
-            a.state.registers.set_register('"', s, false);
-        });
+        self.configure_motions(&[I::Char('d')], owned_range_action(delete));
+        self.configure_motions(&[I::Char('c')], owned_range_action(change));
+        self.configure_motions(&[I::Char('y')], owned_range_action(yank));
         self.configure_arrow_keys(mode);
     }
 
@@ -653,6 +665,8 @@ trait ConfigureKeymap {
         self.add_keymap(mode, [I::Escape], |mut a| a.set_mode(ModeState::Normal));
         self.configure_arrow_keys(mode);
 
+        let zero_pos = Location::new(0, 0);
+
         fn do_simple_motion(a: &mut MapArgs, motion: impl Motion) {
             if let Some(next) = motion.next(a.buf) {
                 a.buf.set_position(next.line(), next.col());
@@ -678,11 +692,19 @@ trait ConfigureKeymap {
             a, ['k'] => a.buf.move_cursor(C::Up);
             a, ['l'] => a.buf.move_cursor(C::Right);
             a, ['d'] => {
-                log::debug!("todo: delete");
+                let range = a.state.visual_range().unwrap_or(zero_pos..zero_pos);
+                delete(a, range.start, range.end, false);
                 a.set_mode(ModeState::Normal);
             };
             a, ['y'] => {
-                log::debug!("todo: yank");
+                let range = a.state.visual_range().unwrap_or(zero_pos..zero_pos);
+                yank(a, range.start, range.end, false);
+                a.set_mode(ModeState::Normal);
+            };
+            a, ['c'] => {
+                let range = a.state.visual_range().unwrap_or(zero_pos..zero_pos);
+                yank(a, range.start, range.end, false);
+                change(a, range.start, range.end, false);
                 a.set_mode(ModeState::Normal);
             };
 
@@ -786,11 +808,7 @@ impl Vim {
     }
 
     pub fn visual_range(&self) -> Option<std::ops::Range<Location>> {
-        let ModeState::Visual { start, end } = self.state.mode else {
-            return None;
-        };
-        let (start, end) = sort_location(start, end);
-        Some(start..end + (0, 1))
+        self.state.visual_range()
     }
 
     pub fn handle_input(&mut self, ch: Input) -> ControlFlow<()> {
@@ -944,6 +962,14 @@ impl VimState {
             quit: false,
             registers: RegisterFile::new(),
         }
+    }
+
+    pub fn visual_range(&self) -> Option<std::ops::Range<Location>> {
+        let ModeState::Visual { start, end } = self.mode else {
+            return None;
+        };
+        let (start, end) = sort_location(start, end);
+        Some(start..end + (0, 1))
     }
 
     fn execute_cmd(&mut self, buf: &mut Buffer, win: &mut Window, cmdline: &str) {

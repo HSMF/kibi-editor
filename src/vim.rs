@@ -9,8 +9,8 @@ use crate::{
     ctrl_key,
     location::Location,
     motion::{
-        Back, BigBack, BigWord, Down, EndOfLine, Left, Motion, Right, SeekUntilChar, StartOfLine,
-        Up, Word,
+        Back, BigBack, BigWord, Down, EndOfFile, EndOfLine, Left, Motion, Right, SeekUntilChar,
+        StartOfFile, StartOfLine, Up, Word,
     },
     trie::{Index, Trie},
     window::Window,
@@ -80,7 +80,10 @@ enum ModeState {
     #[default]
     Normal,
     Insert,
-    Visual,
+    Visual {
+        start: Location,
+        end: Location,
+    },
     Command {
         action: CommandAction,
         cmdline: String,
@@ -104,7 +107,7 @@ impl From<&ModeState> for Mode {
         match value {
             ModeState::Normal => Self::Normal,
             ModeState::Insert => Self::Insert,
-            ModeState::Visual => Self::Visual,
+            ModeState::Visual { .. } => Self::Visual,
             ModeState::Command { .. } => Self::Command,
         }
     }
@@ -161,6 +164,14 @@ enum LookupKeymap<'a> {
     Match(&'a MappingFunc),
     Continue(()),
     NoMatch,
+}
+
+fn sort_location(start: Location, end: Location) -> (Location, Location) {
+    if end < start {
+        (end, start)
+    } else {
+        (start, end)
+    }
 }
 
 macro_rules! pattern {
@@ -320,9 +331,7 @@ trait ConfigureKeymap {
                 }
             };
             mut a, ['i'] => a.set_mode(ModeState::Insert);
-            mut a, ['v'] => a.set_mode(ModeState::Visual);
-            a, ['g' 'g'] => buf_seek_line(a.buf, 0);
-            a, ['G'] => buf_seek_line(a.buf, a.buf.num_lines());
+            mut a, ['v'] => a.set_mode(ModeState::Visual { start: a.buf.position(), end: a.buf.position() });
             mut a, ['a'] => {
                 let (line, col) = a.buf.position().destruct();
                 a.set_mode(ModeState::Insert);
@@ -414,6 +423,8 @@ trait ConfigureKeymap {
                 a.buf.redo();
             };
 
+            a, ['g' 'g'] => do_simple_motion(a, StartOfFile::new());
+            a, ['G'] => do_simple_motion(a, EndOfFile::new());
             a, ['h'] => do_simple_motion(a, Left::new());
             a, ['j'] => do_simple_motion(a, Down::new());
             a, ['k'] => do_simple_motion(a, Up::new());
@@ -425,17 +436,8 @@ trait ConfigureKeymap {
             a, ['$'] => do_simple_motion(a, EndOfLine::new());
             a, ['0'] => do_simple_motion(a, StartOfLine::new());
             a, ['f' ANY] => {
-                let motion = match a.cur_input.last().expect("have last char") {
-                    I::Char(ch) => Some(SeekUntilChar::new(*ch)),
-                    _ => None,
-                };
+                let motion = a.cur_input.last().expect("have last char").char().map(SeekUntilChar::new);
                 do_simple_motion(a, motion);
-            };
-            mut a, [':'] => {
-                a.set_mode(ModeState::Command {
-                    cmdline: String::new(),
-                    action: CommandAction::Command,
-                })
             };
             a, ['n'] => {
                 a.state
@@ -444,6 +446,13 @@ trait ConfigureKeymap {
             a, ['N'] =>  {
                 a.state
                     .execute_search_previous(a.buf, &a.state.registers.get_register('/').value);
+            };
+
+            mut a, [':'] => {
+                a.set_mode(ModeState::Command {
+                    cmdline: String::new(),
+                    action: CommandAction::Command,
+                })
             };
             mut a, ['/'] => {
                 a.set_mode(ModeState::Command {
@@ -480,14 +489,6 @@ trait ConfigureKeymap {
                     a.win.move_window(dir);
                 }
             };
-        }
-
-        fn sort_location(start: Location, end: Location) -> (Location, Location) {
-            if end < start {
-                (end, start)
-            } else {
-                (start, end)
-            }
         }
 
         self.configure_motions(&[I::Char('d')], |a, start, end, linewise| {
@@ -651,11 +652,65 @@ trait ConfigureKeymap {
         use Input as I;
         self.add_keymap(mode, [I::Escape], |mut a| a.set_mode(ModeState::Normal));
         self.configure_arrow_keys(mode);
-        self.add_keymap(mode, [I::Enter], |a| a.buf.add_newline());
-        self.add_keymap(mode, [I::Char('h')], |a| a.buf.move_cursor(C::Left));
-        self.add_keymap(mode, [I::Char('j')], |a| a.buf.move_cursor(C::Down));
-        self.add_keymap(mode, [I::Char('k')], |a| a.buf.move_cursor(C::Up));
-        self.add_keymap(mode, [I::Char('l')], |a| a.buf.move_cursor(C::Right));
+
+        fn do_simple_motion(a: &mut MapArgs, motion: impl Motion) {
+            if let Some(next) = motion.next(a.buf) {
+                a.buf.set_position(next.line(), next.col());
+            }
+        }
+
+        keymaps! {
+            &mut MapArgs, pat, act => {
+                self.add_keymap_op_pending(Mode::Visual, pat, move |mut a| {
+                    act(&mut a);
+                    let ModeState::Visual {start, end: _} = &a.state.mode else {
+                        return;
+                    };
+                    a.state.mode = ModeState::Visual {
+                        start: *start,
+                        end: a.buf.position(),
+                    };
+                })
+            },
+            a, [ESC] => a.set_mode(ModeState::Normal);
+            a, ['h'] => a.buf.move_cursor(C::Left);
+            a, ['j'] => a.buf.move_cursor(C::Down);
+            a, ['k'] => a.buf.move_cursor(C::Up);
+            a, ['l'] => a.buf.move_cursor(C::Right);
+            a, ['d'] => {
+                log::debug!("todo: delete");
+                a.set_mode(ModeState::Normal);
+            };
+            a, ['y'] => {
+                log::debug!("todo: yank");
+                a.set_mode(ModeState::Normal);
+            };
+
+            a, ['g' 'g'] => do_simple_motion(a, StartOfFile::new());
+            a, ['G'] => do_simple_motion(a, EndOfFile::new());
+            a, ['h'] => do_simple_motion(a, Left::new());
+            a, ['j'] => do_simple_motion(a, Down::new());
+            a, ['k'] => do_simple_motion(a, Up::new());
+            a, ['l'] => do_simple_motion(a, Right::new());
+            a, ['w'] => do_simple_motion(a, Word::new());
+            a, ['W'] => do_simple_motion(a, BigWord::new());
+            a, ['b'] => do_simple_motion(a, Back::new());
+            a, ['B'] => do_simple_motion(a, BigBack::new());
+            a, ['$'] => do_simple_motion(a, EndOfLine::new());
+            a, ['0'] => do_simple_motion(a, StartOfLine::new());
+            a, ['f' ANY] => {
+                let motion = a.cur_input.last().expect("have last char").char().map(SeekUntilChar::new);
+                do_simple_motion(a, motion);
+            };
+            a, ['n'] => {
+                a.state
+                    .execute_search(a.buf, &a.state.registers.get_register('/').value);
+            };
+            a, ['N'] =>  {
+                a.state
+                    .execute_search_previous(a.buf, &a.state.registers.get_register('/').value);
+            };
+        }
     }
 }
 
@@ -696,6 +751,10 @@ impl Vim {
         &self.win
     }
 
+    pub fn follow_cursor(&mut self) {
+        self.win.follow_cursor(&self.buf);
+    }
+
     pub fn command_str(&self) -> Option<(char, &str)> {
         match &self.state.mode {
             ModeState::Command { action, cmdline } => Some((action.char(), cmdline)),
@@ -724,6 +783,14 @@ impl Vim {
             Input::Char(ch) => self.buf.insert_char(ch),
             _ => warn!("unhandled char {ch:?}"),
         }
+    }
+
+    pub fn visual_range(&self) -> Option<std::ops::Range<Location>> {
+        let ModeState::Visual { start, end } = self.state.mode else {
+            return None;
+        };
+        let (start, end) = sort_location(start, end);
+        Some(start..end + (0, 1))
     }
 
     pub fn handle_input(&mut self, ch: Input) -> ControlFlow<()> {
@@ -773,8 +840,9 @@ impl Vim {
                 }
             ),
 
-            ModeState::Visual => handle_mode!(self, visual_keymaps),
+            ModeState::Visual { .. } => handle_mode!(self, visual_keymaps),
         }
+        self.win.visual = self.visual_range();
         if self.state.quit {
             ControlFlow::Break(())
         } else {
@@ -920,6 +988,9 @@ impl VimState {
                 "number" | "nu" => {
                     win.options.number = true;
                 }
+                "nonumber" | "nonu" => {
+                    win.options.number = false;
+                }
                 _ => warn!("unknown option: {option:?}"),
             },
             // :<num> => seek to line
@@ -1028,7 +1099,7 @@ impl VimState {
             buf.finish_action();
         }
         match mode {
-            ModeState::Normal | ModeState::Visual | ModeState::Command { .. } => {
+            ModeState::Normal | ModeState::Visual { .. } | ModeState::Command { .. } => {
                 buf.set_go_past_end(false)
             }
             ModeState::Insert => {

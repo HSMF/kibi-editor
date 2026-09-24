@@ -1,6 +1,8 @@
 #![cfg_attr(not(test), warn(clippy::dbg_macro))]
 
-use std::{env, fmt::Display, io::Write, ops::ControlFlow, os::fd::AsRawFd};
+use std::{
+    env, fmt::Display, io::Write, ops::ControlFlow, os::fd::AsRawFd, panic, time::SystemTime,
+};
 
 use anyhow::anyhow;
 use termios::Termios;
@@ -18,6 +20,7 @@ pub mod location;
 mod logger;
 pub mod motion;
 mod options;
+mod render;
 mod term_size;
 pub mod trie;
 mod vim;
@@ -253,6 +256,7 @@ fn draw_status_bar(conf: &mut EditorConfig) {
 }
 
 fn draw_rows(conf: &mut EditorConfig) {
+    conf.v.follow_cursor();
     for row in conf.v.win().rows(conf.v.current_buffer()) {
         let _ = write!(&mut conf.out_buf, "{row}");
         conf.out_buf.extend_from_slice(b"\x1b[K\r\n");
@@ -260,6 +264,22 @@ fn draw_rows(conf: &mut EditorConfig) {
 }
 
 fn main() -> anyhow::Result<()> {
+    panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut f = std::fs::File::create(format!("./kibi-crash-{now}")).unwrap();
+        if let Some(payload) = info.payload_as_str() {
+            let _ = writeln!(f, "payload: {payload}");
+        }
+        if let Some(loc) = info.location() {
+            let _ = writeln!(f, "panic at {loc}");
+        }
+
+        let _ = writeln!(f, "backtrace {:#?}", backtrace);
+    }));
     let options = options::Options::parse(env::args());
 
     if options.print_supported_keymaps {
@@ -279,6 +299,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let orig_termios = enter_raw_mode();
+
     let _alternate_screen = AlternateScreen::new();
     let mut conf = EditorConfig::init()?;
 

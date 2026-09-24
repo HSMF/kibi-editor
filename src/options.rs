@@ -152,4 +152,29 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn various_options() {
+        assert_eq!(
+            parse(["--debug",]),
+            Options {
+                debug: true,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            parse(["--no-debug",]),
+            Options {
+                debug: false,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            parse(["--version",]),
+            Options {
+                version: true,
+                ..Default::default()
+            }
+        );
+    }
 }

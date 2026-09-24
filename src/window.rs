@@ -1,9 +1,10 @@
-use std::fmt::Display;
+use std::{fmt::Display, ops::Range};
 
 use crate::{
     CursorDirection,
-    buffer::{Buffer, get_byte_range_from_char_range},
+    buffer::{Buffer, char_idx_to_byte_idx, get_byte_range_from_char_range},
     location::Location,
+    render::IterExt,
 };
 
 const EMPTY_LINE: &str = if cfg!(test) { "~" } else { "\x1b[30m~\x1b[0m" };
@@ -31,6 +32,8 @@ pub struct Window {
 
     height: usize,
     width: usize,
+
+    pub(crate) visual: Option<Range<Location>>,
 }
 
 impl Window {
@@ -43,6 +46,7 @@ impl Window {
             cursor: Location::new(0, 0),
             height,
             width,
+            visual: None,
         }
     }
 
@@ -58,48 +62,82 @@ impl Window {
         self.height
     }
 
-    /// returns (virt_cursor, offset)
+    /// returns (change in virt_cursor, change in offset) in terms of logical chars
     fn scroll(
         pos: usize,
         old_pos: usize,
         max: usize,
         virt_cursor: usize,
-        offset: usize,
-    ) -> (usize, usize) {
+        get_diff: impl FnOnce(usize, usize) -> usize,
+    ) -> (isize, isize) {
         match pos.cmp(&old_pos) {
             // moved up
             std::cmp::Ordering::Less => {
-                let diff = old_pos - pos;
-
+                let diff = get_diff(pos, old_pos);
                 if virt_cursor > diff {
-                    (virt_cursor - diff, offset)
+                    (-diff.cast_signed(), 0)
                 } else {
                     let diff = diff - virt_cursor;
-                    (0, offset - diff)
+                    (-virt_cursor.cast_signed(), -diff.cast_signed())
                 }
             }
-            std::cmp::Ordering::Equal => (virt_cursor, offset),
+            std::cmp::Ordering::Equal => (0, 0),
             // moved down
             std::cmp::Ordering::Greater => {
-                let diff = pos - old_pos;
+                let diff = get_diff(old_pos, pos);
 
-                if virt_cursor + diff < max {
-                    (virt_cursor + diff, offset)
+                if (virt_cursor + diff) < max {
+                    (diff.cast_signed(), 0)
                 } else {
-                    let diff = diff - (max - virt_cursor);
-                    (max - 1, offset + diff + 1)
+                    assert!(virt_cursor < max);
+                    let available_space = max - virt_cursor - 1;
+                    let diff_offset = diff - available_space;
+                    assert!(diff > 0);
+                    (available_space.cast_signed(), diff_offset.cast_signed())
                 }
             }
         }
     }
 
+    fn scroll_horizontal(&self, buf: &Buffer) -> (usize, usize) {
+        let (line, col) = buf.position().destruct();
+        let cur_row = buf.get_row(line).unwrap_or_default();
+
+        let render_pos: usize = cur_row.chars().rendered().take(col).map(|x| x.len()).sum();
+        let window_start = self.col_offset;
+        let window_end = self.col_offset + self.width;
+        let window = window_start..window_end;
+
+        if window.contains(&render_pos) {
+            return (render_pos - window_start, self.col_offset);
+        }
+
+        if render_pos >= window_end {
+            // TODO: ensure that last_valid is start of a char
+            let sub = 1;
+            let last_valid = window_end - sub;
+            let overshoot = render_pos - last_valid;
+            return (self.width - sub, self.col_offset + overshoot);
+        }
+
+        // TODO: ensure that first_valid is start of a char
+        let off = 0;
+        let first_valid = window_start + off;
+        let overshoot = first_valid - render_pos;
+        (off, self.col_offset - overshoot)
+    }
+
     pub fn follow_cursor(&mut self, buf: &Buffer) {
         let (line, col) = buf.position().destruct();
-        let (old_line, old_col) = self.prev_cursor.destruct();
-        let (mut cy, mut cx) = self.cursor.destruct();
+        let (old_line, _) = self.prev_cursor.destruct();
+        let (mut cy, _) = self.cursor.destruct();
 
-        (cy, self.row_offset) = Self::scroll(line, old_line, self.height, cy, self.row_offset);
-        (cx, self.col_offset) = Self::scroll(col, old_col, self.width, cx, self.col_offset);
+        let (d_cy, d_row_offset) =
+            Self::scroll(line, old_line, self.height, cy, |start, end| end - start);
+        cy = cy.wrapping_add_signed(d_cy);
+        self.row_offset = self.row_offset.wrapping_add_signed(d_row_offset);
+        let cx;
+        (cx, self.col_offset) = self.scroll_horizontal(buf);
 
         self.cursor = Location::new(cy, cx);
         self.prev_cursor = Location::new(line, col);
@@ -134,6 +172,37 @@ impl Window {
             y: 0,
         }
     }
+
+    fn hl_for_row(&self, lnum: usize, row: &str) -> Range<usize> {
+        const EMPTY: Range<usize> = 0..0;
+        let Some(visual) = &self.visual else {
+            return EMPTY;
+        };
+
+        if lnum < visual.start.line() || lnum > visual.end.line() {
+            return EMPTY;
+        }
+
+        if lnum == visual.start.line() && lnum == visual.end.line() {
+            return get_byte_range_from_char_range(row, visual.start.col(), visual.end.col());
+        }
+
+        if lnum == visual.start.line() {
+            return char_idx_to_byte_idx(row, visual.start.col()).unwrap_or(0)..row.len();
+        }
+
+        if lnum == visual.end.line() {
+            return 0..char_idx_to_byte_idx(row, visual.end.col()).unwrap_or(row.len());
+        }
+
+        0..row.len()
+    }
+}
+
+fn project_onto(full: Range<usize>, window: &Range<usize>) -> Range<usize> {
+    let projection = std::cmp::max(window.start, full.start)..std::cmp::min(window.end, full.end);
+
+    projection.start.saturating_sub(window.start)..projection.end.saturating_sub(window.start)
 }
 
 pub struct Rows<'a> {
@@ -145,6 +214,7 @@ pub struct Rows<'a> {
 pub struct Row<'a> {
     row: &'a str,
     num: Option<usize>,
+    hl: Range<usize>,
 }
 
 impl Display for Row<'_> {
@@ -155,7 +225,17 @@ impl Display for Row<'_> {
             write!(f, "\x1b[30m{num:>3}\x1b[0m ")?;
         }
 
-        write!(f, "{}", self.row)?;
+        if self.hl.is_empty() {
+            write!(f, "{}", self.row)?;
+        } else {
+            write!(f, "{}", &self.row[..self.hl.start])?;
+            write!(
+                f,
+                "\x1b[40m{}\x1b[0m",
+                &self.row[self.hl.start..self.hl.end]
+            )?;
+            write!(f, "{}", &self.row[self.hl.end..])?;
+        }
 
         Ok(())
     }
@@ -173,10 +253,17 @@ impl<'a> Iterator for Rows<'a> {
         if self.win.options.number {
             end -= 4;
         }
-        let ret = self
-            .buf
-            .get_row_render_full(self.win.row_offset + self.y)
-            .map(|row| &row[get_byte_range_from_char_range(row, start, end)]);
+        let row_render = self.buf.get_row_render_full(self.win.row_offset + self.y);
+        let (ret, hl) = match row_render {
+            Some(row) => {
+                let hl = self.win.hl_for_row(self.win.row_offset + self.y, row);
+                let range = get_byte_range_from_char_range(row, start, end);
+                let hl = project_onto(hl, &range);
+                let ret = &row[range];
+                (Some(ret), hl)
+            }
+            None => (None, 0..0),
+        };
         self.y += 1;
         if let Some(ret) = ret {
             Some(Row {
@@ -186,11 +273,13 @@ impl<'a> Iterator for Rows<'a> {
                     .options
                     .number
                     .then_some(self.win.row_offset + self.y),
+                hl,
             })
         } else {
             Some(Row {
                 row: EMPTY_LINE,
                 num: None,
+                hl: 0..0,
             })
         }
     }
@@ -263,6 +352,9 @@ mod tests {
             .into_iter()
             .map(|x| x.to_string())
             .collect::<Vec<_>>();
+        let (line, col) = win.cursor().destruct();
+        assert!(line < win.height(), "{line} >= {}", win.height());
+        assert!(col < win.width, "{col} >= {}", win.width);
 
         draw_win(win, buf);
         assert_eq!(got, expected);
@@ -338,6 +430,13 @@ mod tests {
             expected![..(11..=20).map(|x| &*x.to_string().leak())],
         );
 
+        buf.set_position(23, 0);
+        check_rows(
+            &mut win,
+            &buf,
+            expected![..(14..=23).map(|x| &*x.to_string().leak())],
+        );
+
         buf.set_position(5, 0);
         check_rows(
             &mut win,
@@ -373,5 +472,103 @@ mod tests {
         check_rows(&mut win, &buf, expected!["2345678910", ..["~"].repeat(9)]);
         buf.set_position(0, 1);
         check_rows(&mut win, &buf, expected!["1234567891", ..["~"].repeat(9)]);
+    }
+
+    #[test]
+    fn tabs() {
+        let name = "t".to_owned();
+        let mut buf = Buffer::read(name, "\thello\tworld");
+        let mut win = Window::new(10, 10);
+        check_rows(&mut win, &buf, expected!["    hello ", ..["~"].repeat(9)]);
+        buf.move_cursor(CursorDirection::Right);
+        check_rows(&mut win, &buf, expected!["    hello ", ..["~"].repeat(9)]);
+        assert_eq!(win.cursor(), Location::new(0, 4));
+    }
+
+    #[test]
+    fn delete() {
+        let name = "t".to_owned();
+        let mut buf = Buffer::read(name, "hello");
+        buf.set_position(0, 5);
+        let mut win = Window::new(10, 10);
+        check_rows(&mut win, &buf, expected!["hello", ..["~"].repeat(9)]);
+
+        assert_eq!(buf.position(), win.cursor());
+
+        buf.delete_range(Location::new(0, 3), Location::new(0, 5));
+        check_rows(&mut win, &buf, expected!["hel", ..["~"].repeat(9)]);
+        assert_eq!(buf.position(), win.cursor());
+        assert_eq!(buf.position(), Location::new(0, 2));
+        assert_eq!(win.cursor(), Location::new(0, 2));
+    }
+
+    #[test]
+    fn delete_to_scroll() {
+        let name = "t".to_owned();
+        let mut buf = Buffer::read(name, "hello world foo bar baz");
+        buf.set_position(0, 22);
+        let mut win = Window::new(10, 10);
+        check_rows(&mut win, &buf, expected!["oo bar baz", ..["~"].repeat(9)]);
+
+        buf.delete_range(Location::new(0, 11), Location::new(0, 23));
+        check_rows(&mut win, &buf, expected!["d", ..["~"].repeat(9)]);
+    }
+
+    #[test]
+    fn delete_in_insert() {
+        let name = "t".to_owned();
+        let mut buf = Buffer::read(name, "hello world foo bar baz");
+        let mut win = Window::new(10, 10);
+        buf.set_position(0, 22);
+        check_rows(&mut win, &buf, expected!["oo bar baz", ..["~"].repeat(9)]);
+
+        buf.set_go_past_end(true);
+        buf.set_position(0, 23);
+        check_rows(&mut win, &buf, expected!["o bar baz", ..["~"].repeat(9)]);
+
+        buf.delete_range(buf.position() - (0, 1), buf.position());
+        check_rows(&mut win, &buf, expected!["o bar ba", ..["~"].repeat(9)]);
+
+        assert_eq!(win.cursor(), Location::new(0, 8));
+    }
+
+    #[test]
+    fn delete_middle() {
+        let name = "t".to_owned();
+        let mut buf = Buffer::read(name, "hello world foo bar baz");
+        let mut win = Window::new(10, 10);
+        buf.set_position(0, 15);
+        check_rows(&mut win, &buf, expected!["world foo ", ..["~"].repeat(9)]);
+
+        buf.set_position(0, 13);
+        buf.delete_range(buf.position() - (0, 1), buf.position());
+        check_rows(&mut win, &buf, expected!["world oo b", ..["~"].repeat(9)]);
+    }
+
+    #[test]
+    fn delete_tab() {
+        let name = "t".to_owned();
+        let mut buf = Buffer::read(name, "\tabcdef");
+        let mut win = Window::new(10, 10);
+        buf.set_position(0, 1);
+        check_rows(&mut win, &buf, expected!["    abcdef", ..["~"].repeat(9)]);
+        buf.delete_range(Location::new(0, 0), Location::new(0, 1));
+        check_rows(&mut win, &buf, expected!["abcdef", ..["~"].repeat(9)]);
+        assert_eq!(win.cursor(), Location::new(0, 0));
+    }
+
+    #[test]
+    fn many_tabs() {
+        let name = "t".to_owned();
+        let mut buf = Buffer::read(name, "\ta\tb\tcd\te");
+        // render: "    a   b   cd  e"
+        let mut win = Window::new(10, 10);
+        buf.set_position(0, 1);
+        check_rows(&mut win, &buf, expected!["    a   b ", ..["~"].repeat(9)]);
+        buf.set_position(0, 6);
+        check_rows(&mut win, &buf, expected!["a   b   cd", ..["~"].repeat(9)]);
+        buf.set_position(0, 5);
+        assert_eq!(buf.position(), Location::new(0, 5));
+        check_rows(&mut win, &buf, expected!["a   b   cd", ..["~"].repeat(9)]);
     }
 }

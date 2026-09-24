@@ -15,6 +15,7 @@ use crate::{
 };
 
 mod buffer;
+mod style;
 mod get_input;
 pub mod location;
 mod logger;

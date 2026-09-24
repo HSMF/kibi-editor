@@ -7,6 +7,8 @@ use crate::{
     render::IterExt,
 };
 
+use crate::style::{MUTED, RESET, HIGHLIGHT};
+
 const EMPTY_LINE: &str = if cfg!(test) { "~" } else { "\x1b[30m~\x1b[0m" };
 
 pub struct WindowOptions {
@@ -62,6 +64,14 @@ impl Window {
         self.height
     }
 
+    fn effective_width(&self) -> usize {
+        if self.options.number {
+            self.width - 4
+        } else {
+            self.width
+        }
+    }
+
     /// returns (change in virt_cursor, change in offset) in terms of logical chars
     fn scroll(
         pos: usize,
@@ -105,7 +115,8 @@ impl Window {
 
         let render_pos: usize = cur_row.chars().rendered().take(col).map(|x| x.len()).sum();
         let window_start = self.col_offset;
-        let window_end = self.col_offset + self.width;
+        let width = self.effective_width();
+        let window_end = self.col_offset + width; 
         let window = window_start..window_end;
 
         if window.contains(&render_pos) {
@@ -117,7 +128,7 @@ impl Window {
             let sub = 1;
             let last_valid = window_end - sub;
             let overshoot = render_pos - last_valid;
-            return (self.width - sub, self.col_offset + overshoot);
+            return (width - sub, self.col_offset + overshoot);
         }
 
         // TODO: ensure that first_valid is start of a char
@@ -222,7 +233,7 @@ impl Display for Row<'_> {
         if let Some(num) = self.num {
             // hack cos only 3 columns for numbers
             let num = num % 1000;
-            write!(f, "\x1b[30m{num:>3}\x1b[0m ")?;
+            write!(f, "{MUTED}{num:>3}{RESET} ")?;
         }
 
         if self.hl.is_empty() {
@@ -231,7 +242,7 @@ impl Display for Row<'_> {
             write!(f, "{}", &self.row[..self.hl.start])?;
             write!(
                 f,
-                "\x1b[40m{}\x1b[0m",
+                "{HIGHLIGHT}{}{RESET}",
                 &self.row[self.hl.start..self.hl.end]
             )?;
             write!(f, "{}", &self.row[self.hl.end..])?;
@@ -570,5 +581,36 @@ mod tests {
         buf.set_position(0, 5);
         assert_eq!(buf.position(), Location::new(0, 5));
         check_rows(&mut win, &buf, expected!["a   b   cd", ..["~"].repeat(9)]);
+    }
+
+    #[test]
+    fn numbers() {
+        let name = "t".to_owned();
+        let mut buf = Buffer::read(name, "hello, world!\nfoo bar baz");
+        // hello, world!
+        // foo bar baz
+        let mut win = Window::new(10, 10);
+
+        win.options.number = true;
+        check_rows(&mut win, &buf, expected![
+                "  1 hello,",
+                "  2 foo ba",
+                ..["~"].repeat(8)
+            ]);
+
+        buf.set_position(0, 8);
+        check_rows(&mut win, &buf, expected![
+                "  1 lo, wo",
+                "  2  bar b",
+                ..["~"].repeat(8)
+            ]);
+
+        buf.set_position(0, 12);
+        check_rows(&mut win, &buf, expected![
+                "  1 world!",
+                "  2  baz",
+                ..["~"].repeat(8)
+            ]);
+    
     }
 }

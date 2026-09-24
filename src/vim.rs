@@ -991,6 +991,12 @@ impl VimState {
                 "nonumber" | "nonu" => {
                     win.options.number = false;
                 }
+                "expandtab" | "et" => {
+                    buf.options.expandtab = true;
+                }
+                "noexpandtab" | "noet" => {
+                    buf.options.expandtab = false;
+                }
                 _ => warn!("unknown option: {option:?}"),
             },
             // :<num> => seek to line

@@ -12,10 +12,11 @@
 - [x] `c<motion>`
 - [x] `A` / `I`
 - [x] `u` / `<C-R>`
+- [ ] `J`
 
 ## options
 
-- [ ] `expandtab` / `noexpandtab` / `et` / `noet` (sorry Qwendu)
+- [x] `expandtab` / `noexpandtab` / `et` / `noet` (sorry Qwendu)
 - [ ] `wrap` / `nowrap`
 - [x] `number` / `nonumber`
 

@@ -119,8 +119,14 @@ impl Row {
     }
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct BufOptions {
+    pub expandtab: bool,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Buffer {
+    pub options: BufOptions,
     row: Vec<Row>,
     row_off: usize,
     col_off: usize,
@@ -170,6 +176,7 @@ fn iter_split_last<T>(mut i: impl Iterator<Item = T>, mut f: impl FnMut(T)) -> O
 impl Buffer {
     pub fn new() -> Self {
         Self {
+            options: BufOptions::default(),
             row: vec![],
             row_off: 0,
             col_off: 0,
@@ -191,6 +198,7 @@ impl Buffer {
         let row = s.lines().map(|line| Row::new(line.to_owned())).collect();
         Self {
             row,
+            options: BufOptions::default(),
             row_off: 0,
             col_off: 0,
             cur_col: 0,
@@ -412,7 +420,6 @@ impl Buffer {
         let row = &mut self.row[self.cur_line];
 
         row.insert_char(ch, self.cur_col);
-
         self.move_cursor(CursorDirection::Right);
     }
 
@@ -706,6 +713,23 @@ impl Buffer {
     }
 
     pub fn insert_char(&mut self, ch: char) {
+		use crate::render::TAB_WIDTH;
+        if ch == '\t' && self.options.expandtab {
+            let cur_col = self.cur_col;
+            let spill = cur_col % TAB_WIDTH;
+            let need = TAB_WIDTH - spill;
+
+            for _ in 0..need {
+                self.push_action(Action::InsertChar {
+                    inserted: ' ',
+                    at: self.position(),
+                });
+
+                self.do_insert_char(' ');
+            }
+            return;
+        }
+
         self.push_action(Action::InsertChar {
             inserted: ch,
             at: self.position(),
@@ -906,6 +930,7 @@ mod tests {
         assert_eq!(
             Buffer::read(name.clone(), &"hello".repeat(200)),
             Buffer {
+                options: BufOptions::default(),
                 path: Some(name.clone()),
                 dirty: false,
                 name,

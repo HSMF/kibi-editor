@@ -1,6 +1,6 @@
 use tinyvec::{ArrayVec, array_vec};
 
-const TAB_WIDTH: usize = 4;
+pub const TAB_WIDTH: usize = 4;
 
 pub struct RenderedChars<T> {
     inner: T,

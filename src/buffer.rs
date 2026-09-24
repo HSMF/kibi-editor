@@ -3,11 +3,9 @@ use std::{
     ops::{Range, RangeInclusive},
 };
 
-use tinyvec::{ArrayVec, array_vec};
-
 const UNDOLEVEL: usize = 1000;
 
-use crate::{CursorDirection, location::Location};
+use crate::{CursorDirection, location::Location, render::IterExt as _};
 
 #[derive(PartialEq, Eq, Debug)]
 enum Action {
@@ -54,29 +52,12 @@ pub struct Row {
     render_chars: usize,
 }
 
-fn to_hex(x: u8) -> (char, char) {
-    let lo = x & 0xf;
-    let hi = x >> 4;
-    let hex_dig = |ch| if ch < 10 { b'0' + ch } else { b'a' + (ch - 10) };
-    (hex_dig(hi) as char, hex_dig(lo) as char)
-}
-
-pub fn rendered_char(ch: char) -> ArrayVec<[char; 16]> {
-    match ch {
-        '\t' => array_vec!(_ => ' ', ' ', ' ', ' '),
-        ch if ch.is_ascii_control() => {
-            let (a, b) = to_hex(ch as u8);
-            array_vec!(_ => 'X', a, b)
-        }
-        ch => array_vec!(_ => ch),
-    }
-}
 impl Row {
     fn rendered(s: &str) -> (String, usize) {
         let mut ret = String::new();
         let mut len = 0;
-        for ch in s.chars() {
-            for r in rendered_char(ch) {
+        for ch in s.chars().rendered() {
+            for r in ch {
                 ret.push(r)
             }
             len += 1;
@@ -104,16 +85,15 @@ impl Row {
         self.content
             .chars()
             .take(cx.into())
-            .map(|ch| rendered_char(ch).len() as u16)
+            .rendered()
+            .map(|x| x.len() as u16)
             .sum()
     }
 
     fn insert_char(&mut self, ch: char, cur_col: usize) {
         if cur_col == self.content_len() {
             self.content.push(ch);
-            for ch in rendered_char(ch) {
-                self.render.push(ch);
-            }
+            self.recompute_rendered();
         } else {
             let idx = char_idx_to_byte_idx(&self.content, cur_col).expect("byte index exists");
             self.content.insert(idx, ch);
@@ -1171,7 +1151,7 @@ mod tests {
         enact(&mut buf, rows, cols, &[(C::Right, (0, 2), (0, 5))]);
         buf.insert_char('\t');
         assert_eq!(buf.save(), "\tt\this\n");
-        assert_eq!(buf.get_row_render(0, cols.into()), Some("    t    his"));
+        assert_eq!(buf.get_row_render(0, cols.into()), Some("    t   his"));
     }
 
     #[test]

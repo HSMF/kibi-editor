@@ -20,6 +20,7 @@ pub mod location;
 mod logger;
 pub mod motion;
 mod options;
+mod render;
 mod term_size;
 pub mod trie;
 mod vim;

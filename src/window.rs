@@ -247,6 +247,12 @@ impl Window {
     }
 }
 
+fn project_onto(full: Range<usize>, window: &Range<usize>) -> Range<usize> {
+    let projection = std::cmp::max(window.start, full.start)..std::cmp::min(window.end, full.end);
+
+    projection.start.saturating_sub(window.start)..projection.end.saturating_sub(window.start)
+}
+
 pub struct Rows<'a> {
     buf: &'a Buffer,
     win: &'a Window,
@@ -295,13 +301,19 @@ impl<'a> Iterator for Rows<'a> {
         if self.win.options.number {
             end -= 4;
         }
-        let ret = self
-            .buf
-            .get_row_render_full(self.win.row_offset + self.y)
-            .map(|row| &row[get_byte_range_from_char_range(row, start, end)]);
+        let row_render = self.buf.get_row_render_full(self.win.row_offset + self.y);
+        let (ret, hl) = match row_render {
+            Some(row) => {
+                let hl = self.win.hl_for_row(self.win.row_offset + self.y, row);
+                let range = get_byte_range_from_char_range(row, start, end);
+                let hl = project_onto(hl, &range);
+                let ret = &row[range];
+                (Some(ret), hl)
+            }
+            None => (None, 0..0),
+        };
         self.y += 1;
         if let Some(ret) = ret {
-            let hl = self.win.hl_for_row(self.win.row_offset + self.y - 1, ret);
             Some(Row {
                 row: ret,
                 num: self

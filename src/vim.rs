@@ -6,6 +6,7 @@ use tinyvec::{TinyVec, tiny_vec};
 use crate::{
     CursorDirection, Input,
     buffer::{self, Buffer},
+    collections::bounded_stack::BoundedStack,
     ctrl_key,
     location::Location,
     motion::{
@@ -117,6 +118,8 @@ pub struct VimState {
     mode: ModeState,
     quit: bool,
     registers: RegisterFile,
+    // jumped (from, to)
+    jump_stack: BoundedStack<(Location, Location)>,
 }
 
 type MappingFunc = dyn Fn(MapArgs);
@@ -366,6 +369,12 @@ trait ConfigureKeymap {
             }
         }
 
+        fn do_far_motion(a: MapArgs, motion: impl Motion) {
+            if let Some(next) = motion.next(a.buf) {
+                a.state.jump(a.buf, next);
+            }
+        }
+
         keymaps! {
             MapArgs, pat, act => self.add_keymap_op_pending(Mode::Normal, pat, act),
             mut a, [ESC] => a.set_mode(ModeState::Normal);
@@ -380,6 +389,13 @@ trait ConfigureKeymap {
                 for _ in 0..mid {
                     a.buf.move_cursor(C::Down)
                 }
+            };
+            a, [CTRL(b'o')] => {
+                a.state.jump_back(a.buf);
+            };
+            // apparently \t is the same keycode as <C-i>
+            a, ['\t'] => {
+                a.state.jump_ahead(a.buf);
             };
             mut a, ['i'] => a.set_mode(ModeState::Insert);
             mut a, ['v'] => a.set_mode(ModeState::Visual { start: a.buf.position(), end: a.buf.position() });
@@ -474,8 +490,8 @@ trait ConfigureKeymap {
                 a.buf.redo();
             };
 
-            a, ['g' 'g'] => do_simple_motion(a, StartOfFile::new());
-            a, ['G'] => do_simple_motion(a, EndOfFile::new());
+            a, ['g' 'g'] => do_far_motion(a, StartOfFile::new());
+            a, ['G'] => do_far_motion(a, EndOfFile::new());
             a, ['h'] => do_simple_motion(a, Left::new());
             a, ['j'] => do_simple_motion(a, Down::new());
             a, ['k'] => do_simple_motion(a, Up::new());
@@ -491,12 +507,16 @@ trait ConfigureKeymap {
                 do_simple_motion(a, motion);
             };
             a, ['n'] => {
-                a.state
-                    .execute_search(a.buf, &a.state.registers.get_register('/').value);
+                if let Some(p) = a.state
+                    .execute_search(a.buf, &a.state.registers.get_register('/').value) {
+                    a.state.jump(a.buf, p);
+                }
             };
             a, ['N'] =>  {
-                a.state
-                    .execute_search_previous(a.buf, &a.state.registers.get_register('/').value);
+                if let Some(p) = a.state
+                    .execute_search_previous(a.buf, &a.state.registers.get_register('/').value) {
+                    a.state.jump(a.buf, p);
+                }
             };
 
             mut a, [':'] => {
@@ -725,12 +745,16 @@ trait ConfigureKeymap {
                 do_simple_motion(a, motion);
             };
             a, ['n'] => {
-                a.state
-                    .execute_search(a.buf, &a.state.registers.get_register('/').value);
+                if let Some(p) = a.state
+                    .execute_search(a.buf, &a.state.registers.get_register('/').value) {
+                    a.state.jump(a.buf, p);
+                }
             };
             a, ['N'] =>  {
-                a.state
-                    .execute_search_previous(a.buf, &a.state.registers.get_register('/').value);
+                if let Some(p) = a.state
+                    .execute_search_previous(a.buf, &a.state.registers.get_register('/').value) {
+                    a.state.jump(a.buf, p);
+                }
             };
         }
     }
@@ -961,6 +985,7 @@ impl VimState {
             mode: ModeState::Normal,
             quit: false,
             registers: RegisterFile::new(),
+            jump_stack: BoundedStack::new_with_capacity(100),
         }
     }
 
@@ -1003,7 +1028,9 @@ impl VimState {
                 win.width = cols;
             }
             s if let Some(search) = s.strip_prefix("/") => {
-                self.execute_search(buf, search);
+                if let Some(p) = self.execute_search(buf, search) {
+                    self.jump(buf, p);
+                }
             }
             s if let Some(cmd) = s.strip_prefix(":") => {
                 self.execute_cmd(buf, win, cmd);
@@ -1040,9 +1067,10 @@ impl VimState {
         }
     }
 
-    fn execute_search(&self, buf: &mut Buffer, pattern: &str) {
+    #[must_use]
+    fn execute_search(&self, buf: &mut Buffer, pattern: &str) -> Option<Location> {
         if pattern.is_empty() {
-            return;
+            return None;
         }
         let pos = buf.position();
 
@@ -1070,15 +1098,17 @@ impl VimState {
         });
 
         if let Some(first_match) = first_match {
-            buf.set_position(first_match.line(), first_match.col());
+            Some(first_match)
         } else {
-            warn!("{pattern:?} not found in buffer")
+            warn!("{pattern:?} not found in buffer");
+            None
         }
     }
 
-    fn execute_search_previous(&self, buf: &mut Buffer, pattern: &str) {
+    #[must_use]
+    fn execute_search_previous(&self, buf: &mut Buffer, pattern: &str) -> Option<Location> {
         if pattern.is_empty() {
-            return;
+            return None;
         }
         let pos = buf.position();
 
@@ -1111,9 +1141,10 @@ impl VimState {
         });
 
         if let Some(first_match) = first_match {
-            buf.set_position(first_match.line(), first_match.col());
+            Some(first_match)
         } else {
-            warn!("{pattern:?} not found in buffer")
+            warn!("{pattern:?} not found in buffer");
+            None
         }
     }
 
@@ -1124,11 +1155,15 @@ impl VimState {
             CommandAction::Command => self.execute_cmd(buf, win, cmdline),
             CommandAction::Search => {
                 self.registers.set_register('/', cmdline.to_string(), false);
-                self.execute_search(buf, cmdline);
+                if let Some(p) = self.execute_search(buf, cmdline) {
+                    self.jump(buf, p);
+                }
             }
             CommandAction::SearchPrevious => {
                 self.registers.set_register('/', cmdline.to_string(), false);
-                self.execute_search_previous(buf, cmdline);
+                if let Some(p) = self.execute_search_previous(buf, cmdline) {
+                    self.jump(buf, p);
+                }
             }
         }
     }
@@ -1147,6 +1182,27 @@ impl VimState {
             }
         }
         self.mode = mode;
+    }
+
+    fn jump(&mut self, buf: &mut Buffer, loc: Location) {
+        self.jump_stack.push((buf.position(), loc));
+        buf.set_position(loc.line(), loc.col());
+    }
+
+    /// <C-o>
+    fn jump_back(&mut self, buf: &mut Buffer) {
+        self.jump_stack.undo(|(from, to)| {
+            buf.set_position(from.line(), from.col());
+            (from, to)
+        });
+    }
+
+    /// <C-i>
+    fn jump_ahead(&mut self, buf: &mut Buffer) {
+        self.jump_stack.redo(|(from, to)| {
+            buf.set_position(to.line(), to.col());
+            (from, to)
+        });
     }
 }
 
@@ -1666,6 +1722,18 @@ mod tests {
             feedkeys(&mut vim, "cj").no_break();
             assert_eq!(vim.current_buffer().save(), "\n3\n4\n");
             assert_eq!(vim.mode(), Mode::Insert);
+        }
+        jump_back() vim, buf = "- a\n- b\n- c" => {
+            feedkeys(&mut vim, "/-\n").no_break();
+            assert_eq!(vim.current_buffer().position(), Location::new(1, 0));
+            vim.handle_input(ctrl_key(b'o')).no_break();
+            assert_eq!(vim.current_buffer().position(), Location::new(0, 0));
+            vim.handle_input(Input::Char('\t')).no_break();
+            assert_eq!(vim.current_buffer().position(), Location::new(1, 0));
+            vim.handle_input(ctrl_key(b'o')).no_break();
+            assert_eq!(vim.current_buffer().position(), Location::new(0, 0));
+            vim.handle_input(Input::Char('\t')).no_break();
+            assert_eq!(vim.current_buffer().position(), Location::new(1, 0));
         }
     }
 }

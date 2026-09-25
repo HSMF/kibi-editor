@@ -1,11 +1,11 @@
-use std::{
-    collections::VecDeque,
-    ops::{Range, RangeInclusive},
-};
+use std::ops::{Range, RangeInclusive};
 
 const UNDOLEVEL: usize = 1000;
 
-use crate::{CursorDirection, location::Location, render::IterExt as _};
+use crate::{
+    CursorDirection, collections::bounded_stack::BoundedStack, location::Location,
+    render::IterExt as _,
+};
 
 #[derive(PartialEq, Eq, Debug)]
 enum Action {
@@ -138,8 +138,7 @@ pub struct Buffer {
 
     allow_one_past: bool,
 
-    actions: VecDeque<Action>,
-    redo_actions: Vec<Action>,
+    actions: BoundedStack<Action>,
 
     in_cur_group: bool,
     cur_group: Vec<Action>,
@@ -186,8 +185,7 @@ impl Buffer {
             path: None,
             dirty: false,
             allow_one_past: false,
-            actions: VecDeque::new(),
-            redo_actions: Vec::new(),
+            actions: BoundedStack::new_with_capacity(UNDOLEVEL),
 
             in_cur_group: false,
             cur_group: Vec::new(),
@@ -207,8 +205,7 @@ impl Buffer {
             name,
             dirty: false,
             allow_one_past: false,
-            actions: VecDeque::new(),
-            redo_actions: Vec::new(),
+            actions: BoundedStack::new_with_capacity(UNDOLEVEL),
 
             in_cur_group: false,
             cur_group: Vec::new(),
@@ -673,15 +670,11 @@ impl Buffer {
     }
 
     fn push_action(&mut self, act: Action) {
-        self.redo_actions.clear();
         if self.in_cur_group {
             self.cur_group.push(act);
             return;
         }
-        if self.actions.len() == UNDOLEVEL {
-            self.actions.pop_front();
-        }
-        self.actions.push_back(act);
+        self.actions.push(act);
     }
 
     /// starts a group of actions that are treated atomically
@@ -829,21 +822,21 @@ impl Buffer {
     }
 
     pub fn undo(&mut self) {
-        let Some(action) = self.actions.pop_back() else {
-            return;
-        };
-        self.dirty = true;
-        let action = self.do_undo(action);
-        self.redo_actions.push(action);
+        let mut actions = std::mem::take(&mut self.actions);
+        actions.undo(|action| {
+            self.dirty = true;
+            self.do_undo(action)
+        });
+        self.actions = actions;
     }
 
     pub fn redo(&mut self) {
-        let Some(action) = self.redo_actions.pop() else {
-            return;
-        };
-        self.dirty = true;
-        let action = self.do_undo(action);
-        self.actions.push_back(action);
+        let mut actions = std::mem::take(&mut self.actions);
+        actions.redo(|action| {
+            self.dirty = true;
+            self.do_undo(action)
+        });
+        self.actions = actions;
     }
 }
 
@@ -940,8 +933,7 @@ mod tests {
                 cur_line: 0,
                 cur_col: 0,
                 allow_one_past: false,
-                actions: VecDeque::new(),
-                redo_actions: Vec::new(),
+                actions: BoundedStack::new_with_capacity(UNDOLEVEL),
 
                 in_cur_group: false,
                 cur_group: Vec::new(),

@@ -26,6 +26,7 @@ mod term_size;
 pub mod trie;
 mod vim;
 mod window;
+mod collections;
 
 struct StatusMessage {
     inner: Option<String>,

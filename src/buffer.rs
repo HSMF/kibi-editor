@@ -695,6 +695,13 @@ impl Buffer {
 
 // buffer mutating operations
 impl Buffer {
+    pub fn set_line(&mut self, line: usize, new_content: String) {
+        self.start_action();
+        self.remove_line(line);
+        self.insert_lines(line, std::iter::once(new_content));
+        self.finish_action();
+    }
+
     pub fn remove_line(&mut self, line: usize) -> String {
         let line_num = line;
         let line = self.do_remove_line(line_num);

@@ -3,6 +3,8 @@ use std::{env, ops::ControlFlow, process::Command};
 use log::{debug, warn};
 use tinyvec::{TinyVec, tiny_vec};
 
+mod buf_actions;
+
 use crate::{
     CursorDirection, Input,
     buffer::{self, Buffer},
@@ -14,6 +16,7 @@ use crate::{
         StartOfFile, StartOfLine, Up, Word,
     },
     trie::{Index, Trie},
+    vim::buf_actions::join_lines,
     window::Window,
 };
 
@@ -336,37 +339,6 @@ fn yank(a: &mut MapArgs, start: Location, end: Location, linewise: bool) {
     a.state.registers.set_register('"', s, false);
 }
 
-fn join_lines(buf: &mut Buffer, line: usize) {
-    let Some(l1) = buf.get_row(line) else {
-        return;
-    };
-    let Some(l2) = buf.get_row(line + 1) else {
-        return;
-    };
-
-    let l2 = l2.trim();
-
-    let new_line = if l1.is_empty() {
-        l2.to_owned()
-    } else if l2.is_empty() {
-        l1.to_owned()
-    } else {
-        let mut s = String::with_capacity(l1.len() + l2.len() + 1);
-        s.push_str(l1);
-        s.push(' ');
-        s.push_str(l2);
-        s
-    };
-
-    let l = l1.len();
-
-    buf.start_action();
-    buf.remove_lines(line..line + 2);
-    buf.insert_lines(line, std::iter::once(new_line));
-    buf.finish_action();
-    buf.set_position(line, l);
-}
-
 trait ConfigureKeymap {
     fn add_keymap<F: Fn(MapArgs) + 'static>(
         &mut self,
@@ -522,6 +494,12 @@ trait ConfigureKeymap {
             };
             a, ['J'] => {
                 join_lines(a.buf, a.buf.position().line());
+            };
+            a, [CTRL(b'a')] => {
+                buf_actions::increment(a.buf);
+            };
+            a, [CTRL(b'x')] => {
+                buf_actions::decrement(a.buf);
             };
 
             a, ['g' 'g'] => do_far_motion(a, StartOfFile::new());
@@ -1774,6 +1752,20 @@ mod tests {
             assert_eq!(vim.current_buffer().save(), "a b\nc\n");
             feedkeys(&mut vim, "u").no_break();
             assert_eq!(vim.current_buffer().save(), "a\nb\nc\n");
+        }
+        incr() vim, buf = "x = 10;" => {
+            vim.handle_input(ctrl_key(b'a')).no_break();
+            assert_eq!(vim.current_buffer().save(), "x = 11;\n");
+            assert_eq!(vim.current_buffer().position(), Location::new(0, 5));
+        }
+        decr() vim, buf = "x = 10;\ny = 0" => {
+            vim.handle_input(ctrl_key(b'x')).no_break();
+            assert_eq!(vim.current_buffer().save(), "x = 9;\ny = 0\n");
+            assert_eq!(vim.current_buffer().position(), Location::new(0, 4));
+            feedkeys(&mut vim, "j").no_break();
+            vim.handle_input(ctrl_key(b'x')).no_break();
+            assert_eq!(vim.current_buffer().save(), "x = 9;\ny = -1\n");
+            assert_eq!(vim.current_buffer().position(), Location::new(1, 5));
         }
     }
 }
